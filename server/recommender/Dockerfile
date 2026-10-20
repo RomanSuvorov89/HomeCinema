@@ -3,6 +3,7 @@ RUN apk add --no-cache curl
 WORKDIR /app
 COPY kp_sync.py /app/kp_sync.py
 COPY episode_schedule.py /app/episode_schedule.py
+COPY kinoafisha.py /app/kinoafisha.py
 COPY home_cache.py /app/home_cache.py
 COPY candidate_engine.py /app/candidate_engine.py
 COPY review_api.py /app/review_api.py
