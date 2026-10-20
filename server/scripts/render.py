@@ -85,6 +85,8 @@ def render():
     watch_js = watch.SCRIPT.replace('__HOST__',json.dumps(lampac)).replace('__TOKEN__',json.dumps(token))
     poster_js = (ROOT / 'poster-cache/posters.js').read_text().replace("'__POSTER_BASE__'", json.dumps(posters))
     prefix = family + watch.BEGIN + '\n' + watch_js + '\n' + watch.END + '\n' + prefetch.BEGIN + '\n' + prefetch.SCRIPT + '\n' + prefetch.END + '\n/* roman-poster-cache:start */\n' + poster_js + '\n/* roman-poster-cache:end */\n/* roman-bootstrap-start */\n' + bootstrap + '\n/* roman-bootstrap-end */\n'
+    if os.environ.get('APPLE_TV_THEME', '1') == '1':
+        prefix = load('set-apple-theme').bundle(PROJECT) + prefix
     result = prefix + text + '\n' + (ROOT / 'templates/mpv-bridge.js').read_text() + '\n'
     for name, body in rendered.items():
         (rec / name).write_text(body,encoding='utf-8')

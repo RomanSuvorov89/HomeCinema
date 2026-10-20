@@ -72,6 +72,7 @@ docker compose --env-file server/.runtime.env -f server/docker-compose.yml logs 
 - [Что включено и что проверено](docs/FEATURES.md)
 - [Архитектура](docs/ARCHITECTURE.md)
 - [Ограничения](docs/KNOWN_ISSUES.md)
+- [Оформление Apple TV и откат](docs/APPEARANCE.md)
 - [TODO](TODO.md)
 - [Контекст для дальнейших доработок](docs/CONTEXT.md)
 
