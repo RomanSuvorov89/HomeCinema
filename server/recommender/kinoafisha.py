@@ -113,11 +113,9 @@ def load(media,cached_url='',fetch=None):
     else:
         if not media['release_year']:raise ValueError('Premiere year missing for Kinoafisha matching')
         found={}
-        names={clean(media['title']),clean(media['original_title'])}-{''}
         for query in dict.fromkeys(filter(None,(media['original_title'],media['title']))):
             search=Page(fetch(BASE+'/search/?'+urlencode({'q':query})))
-            candidates={series_url(href) for href,label in search.links
-                        if any(n in clean(label) for n in names)}-{None}
+            candidates={series_url(href) for href,_ in search.links}-{None}
             if len(candidates)>8:raise ValueError('Too many Kinoafisha candidates')
             for url in sorted(candidates):
                 candidate=Page(fetch(url))

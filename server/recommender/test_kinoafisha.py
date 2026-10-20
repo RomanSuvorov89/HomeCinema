@@ -35,6 +35,15 @@ class KinoafishaTest(unittest.TestCase):
         calls.clear();self.assertEqual(load(self.media,url,fetch)[0],rows)
         self.assertFalse(any('/search/' in u for u in calls))
 
+    def test_search_link_can_be_empty_with_title_outside_anchor(self):
+        def fetch(url):
+            if '/search/' in url:
+                return '<a href="https://www.kinoafisha.info/series/test-show/"></a><span>Тест</span><a href="/series/calendar/">График</a>'
+            return self.header+episode(4,10,'7 октября 2026')
+        rows,url=load(self.media,fetch=fetch)
+        self.assertEqual(url,self.root)
+        self.assertEqual(rows[-1]['date'],'2026-10-07')
+
     def test_wrong_year_and_ambiguous_matches_are_rejected(self):
         def ambiguous(url):
             if '/search/' in url:return '<a href="/series/test-show/">Тест</a><a href="/series/other/">Тест</a>'
