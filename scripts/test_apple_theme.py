@@ -8,6 +8,14 @@ spec=importlib.util.spec_from_file_location('apple_theme',ROOT/'scripts/set-appl
 module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
 
 class ThemeTest(unittest.TestCase):
+    def test_background_and_badges(self):
+        css=(ROOT/'themes/apple-tv.css').read_text()
+        self.assertIn('.background canvas { visibility: hidden !important; }', css)
+        self.assertNotIn('display: none', css)
+        badge=css.split('.homecinema-apple .roman-card-rating {')[1].split('}')[0]
+        self.assertNotIn('background:', badge)
+        self.assertNotIn('color:', badge)
+
     def test_install_and_remove_preserve_every_other_block_and_inode(self):
         original='/* family-sync */\n/* posters */\n/* home actions */\nfunction start() {var plugins_add = {initiale};}\n'
         with tempfile.TemporaryDirectory() as directory:

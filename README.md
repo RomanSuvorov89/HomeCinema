@@ -39,7 +39,7 @@ bash server/healthcheck.sh
 | Lampac / Lampa | 9118 | `server/data/lampac` |
 | TorrServer | 8090 | `server/data/torrserver` |
 | Каталог и рекомендации | 9120 | `server/data/recommender` |
-| Кэш постеров Кинопоиска | 9121 | `server/data/poster-cache` |
+| Кэш постеров Киноафиши / Кинопоиска | 9121 | `server/data/poster-cache` |
 
 На ТВ и ПК откройте `PUBLIC_LAMPAC_URL`. Центральный клиент подключает каталог, Family Sync, постеры, предзагрузку и bridge. Для Windows плеера: [инструкция](docs/WINDOWS.md). Для Android TV: [инструкция](android/README.md).
 
@@ -81,3 +81,7 @@ docker compose --env-file server/.runtime.env -f server/docker-compose.yml logs 
 ## Проверки исходников
 
 Нужны Python 3, Node.js и bash. Команда `bash scripts/check.sh` проверяет шаблоны и синтаксис, серверные компоненты и клиентские сценарии без обращения к реальному серверу. Docker-сборка, Windows PowerShell и реальные телевизоры проверяются отдельно.
+
+### Исправление меню, темы и сезонных постеров на действующем сервере
+
+`scripts/update-appearance-posters.sh COMMIT_SHA RECOMMENDER_DIR POSTER_DIR LAMPAINIT` обновляет существующую установку с резервными копиями. Подробности выбора сезона и диагностики: [кэш постеров](server/poster-cache/README.md). Меню «Для меня» использует штатное закрытие Select без повторного вызова из onBack. Тема сохраняет все оценки и фирменные цвета платформ, убирает цветной canvas-фон. После обновления нужен полный перезапуск Lampa / Ctrl+F5.

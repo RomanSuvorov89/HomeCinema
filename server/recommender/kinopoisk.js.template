@@ -340,10 +340,10 @@
       if (item.predicted_rating != null) entries.push({title: 'Почему предложено', explain: true});
       Lampa.Select.show({title: 'Для меня', items: entries,
         onSelect: function (selected) {
-          Lampa.Select.close();
+          // Native Select hides the menu before invoking onSelect.
           if (selected.explain) explain(); else {save(selected.status);Lampa.Controller.toggle('full');}
         },
-        onBack: function () {Lampa.Select.close();Lampa.Controller.toggle('full');}
+        onBack: function () {Lampa.Controller.toggle('full');}
       });
     });
     host.append(button);

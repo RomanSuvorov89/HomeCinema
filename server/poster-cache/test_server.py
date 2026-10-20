@@ -152,5 +152,44 @@ class subprocess_result:
     stderr = b''
 
 
+class TestSourceChain(unittest.TestCase):
+    def test_season_failure_tries_main_before_kinopoisk(self):
+        with tempfile.TemporaryDirectory() as root:
+            cache=server.Posters(root)
+            with patch.object(cache.kinoafisha,'sources',return_value=[('kinoafisha-season','season'),('kinoafisha-main','main')]), patch.object(cache,'download',side_effect=[OSError('gone'),png()]) as download, patch.object(cache,'fetch') as kp:
+                self.assertEqual(cache.get('42',2)[0],png())
+                self.assertEqual([call.args[0] for call in download.call_args_list],['season','main'])
+                kp.assert_not_called()
+                self.assertEqual(json.loads((Path(root)/'42.v3.s2.json').read_text())['source'],'kinoafisha-main')
+
+    def test_old_kinopoisk_cache_does_not_block_upgrade_or_mix_seasons(self):
+        with tempfile.TemporaryDirectory() as root:
+            (Path(root)/'42.img').write_bytes(png())
+            cache=server.Posters(root)
+            with patch.object(cache.kinoafisha,'sources',return_value=[('kinoafisha-season','season')]), patch.object(cache,'download',return_value=png()) as download:
+                cache.get('42',1)
+                cache.get('42',2)
+                cache.get('42',1)
+                self.assertEqual(download.call_count,2)
+                self.assertTrue((Path(root)/'42.v3.s1.img').is_file())
+                self.assertTrue((Path(root)/'42.v3.s2.img').is_file())
+
+    def test_all_kinoafisha_sources_fail_uses_kinopoisk(self):
+        with tempfile.TemporaryDirectory() as root:
+            cache=server.Posters(root)
+            with patch.object(cache.kinoafisha,'sources',return_value=[('kinoafisha-season','season'),('kinoafisha-main','main')]), patch.object(cache,'download',side_effect=OSError('blocked')), patch.object(cache,'fetch',return_value=png()) as kp:
+                cache.get('42',2)
+                kp.assert_called_once_with('42')
+
+    def test_expired_image_is_rechecked_and_offline_image_survives(self):
+        import os
+        with tempfile.TemporaryDirectory() as root:
+            cache=server.Posters(root)
+            with patch.object(cache.kinoafisha,'sources',return_value=[]),patch.object(cache,'fetch',return_value=png()):
+                cache.get('42',2)
+            os.utime(Path(root)/'42.v3.s2.img',(0,0))
+            with patch.object(cache.kinoafisha,'sources',side_effect=OSError('offline')),patch.object(cache,'fetch',side_effect=OSError('offline')):
+                self.assertEqual(cache.get('42',2),(png(),'image/png',True))
+
 if __name__ == '__main__':
     unittest.main()

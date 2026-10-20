@@ -21,7 +21,28 @@
         return id || '';
     }
 
-    function url(id) { return base + '/poster/kp/' + id + '.jpg?v=2'; }
+    function posterKey(data) {
+        var id = kpId(data);
+        if (!id) return '';
+        var season = Number(data.season_number || 0);
+        var kind = data.media_type || (data.name || data.first_air_date ? 'tv' : 'movie');
+        if (kind === 'tv') {
+            if (!season && Lampa.Storage && Lampa.Utils && Lampa.Utils.hash) {
+                var watched = Lampa.Storage.get('online_watched_last', {});
+                var title = data.original_name || data.original_title || data.name || data.title || '';
+                var last = watched[Lampa.Utils.hash(title)];
+                if (last) season = Number(last.season || 0);
+            }
+            if (!season) season = Number((index.seasons || {})[id] || 0);
+        }
+        if (!isFinite(season) || season < 0 || season > 999 || Math.floor(season) !== season) season = 0;
+        return id + '~' + season;
+    }
+
+    function url(key) {
+        var parts = key.split('~');
+        return base + '/poster/kp/' + parts[0] + '.jpg?v=3&season=' + (parts[1] || '0');
+    }
 
     function load(id, callback) {
         var state = loads[id];
@@ -70,7 +91,7 @@
 
     function card(element) {
         if (!element || !element.card_data) return;
-        var id = kpId(element.card_data);
+        var id = posterKey(element.card_data);
         if (!id) return;
         var image = element.querySelector('img.card__img');
         // Keep the existing renderer's lazy-loading behavior.
@@ -85,7 +106,7 @@
 
     var fullCard = null;
     function full() {
-        var id = kpId(fullCard);
+        var id = posterKey(fullCard);
         if (!id) return;
         Array.prototype.forEach.call(document.querySelectorAll('img.full--poster, .full-start__poster img'), function (image) {
             replaceImage(image, id);
@@ -145,6 +166,9 @@
         observer.observe(document.body, {childList: true, subtree: true, attributes: true, attributeFilter: ['src']});
         scan(document.body);
         refresh();
+        if (Lampa.Storage && Lampa.Storage.listener) Lampa.Storage.listener.follow('change', function (event) {
+            if (event.name === 'online_watched_last') {scan(document.body);full();}
+        });
         setInterval(refresh, 60000);
     }
     start();

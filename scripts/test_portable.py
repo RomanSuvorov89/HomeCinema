@@ -6,6 +6,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import sys
 import unittest
 from unittest.mock import patch
 
@@ -41,7 +42,8 @@ class PortableTest(unittest.TestCase):
 
     def test_alias_uses_correct_disk_cache(self):
         spec=importlib.util.spec_from_file_location('posters',ROOT/'server/poster-cache/server.py')
-        module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+        with patch.object(sys, 'path', [str(ROOT/'server/poster-cache')] + sys.path):
+            module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary);(root/'poster-overrides.json').write_text(json.dumps({'45003510':'5003510'}))
             cache=module.Posters(root/'posters')
@@ -50,7 +52,7 @@ class PortableTest(unittest.TestCase):
             with patch.object(cache,'fetch',return_value=data) as fetch:
                 self.assertEqual(cache.get('45003510')[0],data)
                 fetch.assert_called_once_with('5003510')
-                self.assertTrue((root/'posters/5003510.img').is_file())
+                self.assertTrue((root/'posters/5003510.v3.s0.img').is_file())
                 self.assertTrue(cache.get('45003510')[2])
 
 if __name__=='__main__': unittest.main()

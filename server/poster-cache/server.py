@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Disk-backed Kinopoisk posters. Catalog databases are read only."""
+from datetime import date
 import hashlib
 import json
 import os
@@ -11,7 +12,8 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, parse_qs
+from kinoafisha_posters import KinoafishaPosters
 from urllib.request import urlopen
 
 CACHE = Path(os.environ.get('POSTER_CACHE', '/data/posters'))
@@ -44,9 +46,13 @@ class Posters:
         self.slots = threading.BoundedSemaphore(3)
         self.failures = {}
         self.state_lock = threading.Lock()
+        self.kinoafisha = KinoafishaPosters(CATALOG)
 
     def fetch(self, kp_id):
         source = 'https://st.kp.yandex.net/images/film_iphone/iphone360_' + kp_id + '.jpg'
+        return self.download(source)
+
+    def download(self, source):
         with self.slots:
             fd, temporary = tempfile.mkstemp(prefix='download-', dir=self.root)
             os.close(fd)
@@ -67,7 +73,9 @@ class Posters:
             finally:
                 Path(temporary).unlink(missing_ok=True)
 
-    def get(self, kp_id):
+    def get(self, kp_id, season=0):
+        if not isinstance(season, int) or not 0 <= season <= 999:
+            raise ValueError('Invalid season')
         kp_id = valid_id(kp_id)
         if not kp_id:
             raise ValueError('Invalid Kinopoisk ID')
@@ -77,16 +85,45 @@ class Posters:
             kp_id = valid_id(overrides.get(kp_id, kp_id))
             if not kp_id:
                 raise ValueError('Invalid poster override')
-        path = self.root / (kp_id + '.img')
+        key = kp_id + '.v3.s' + str(season)
+        path = self.root / (key + '.img')
+        metadata = self.root / (key + '.json')
         with self.locks[int(kp_id) % len(self.locks)]:
+            stale = None
             if path.is_file():
                 data = path.read_bytes()
-                return data, image_type(data), True
+                stale = (data, image_type(data), True)
+                info = json.loads(metadata.read_text()) if metadata.is_file() else {}
+                ttl = 86400 if info.get('source', '').startswith('kinoafisha') else 21600
+                if time.time() - path.stat().st_mtime < ttl:
+                    return stale
             with self.state_lock:
-                if self.failures.get(kp_id, 0) > time.monotonic():
+                if self.failures.get(key, 0) > time.monotonic():
+                    if stale:
+                        return stale
                     raise OSError('Previous download failed; retry after 60 seconds')
             try:
-                data = self.fetch(kp_id)
+                source = 'kinopoisk'
+                data = None
+                try:
+                    sources = self.kinoafisha.sources(kp_id, season)
+                except Exception as error:
+                    sources = []
+                    print('kinoafisha fallback:', kp_id, str(error)[-200:], flush=True)
+                for candidate, url in sources:
+                    try:
+                        data = self.download(url)
+                        source = candidate
+                        break
+                    except Exception as error:
+                        print('poster source failed:', candidate, str(error)[-160:], flush=True)
+                if data is None:
+                    legacy = self.root / (kp_id + '.img')
+                    if legacy.is_file():
+                        data = legacy.read_bytes()
+                        image_type(data)
+                    else:
+                        data = self.fetch(kp_id)
                 fd, temporary = tempfile.mkstemp(prefix='save-', dir=self.root)
                 try:
                     with os.fdopen(fd, 'wb') as stream:
@@ -96,28 +133,31 @@ class Posters:
                     os.replace(temporary, path)
                 finally:
                     Path(temporary).unlink(missing_ok=True)
-                print('poster saved:', kp_id, len(data), flush=True)
+                metadata.write_text(json.dumps({'source': source, 'season': season, 'checked_at': int(time.time())}))
+                print('poster saved:', kp_id, 'season:', season, 'source:', source, len(data), flush=True)
                 return data, image_type(data), False
             except Exception:
                 with self.state_lock:
-                    self.failures[kp_id] = time.monotonic() + 60
+                    self.failures[key] = time.monotonic() + 60
                     if len(self.failures) > 4096:
                         now = time.monotonic()
                         self.failures = {k: v for k, v in self.failures.items() if v > now}
+                if stale:
+                    return stale
                 raise
 
 
 class Catalog:
     def __init__(self):
         self.lock = threading.Lock()
-        self.value = {'paths': {}, 'ids': {}, 'imdb': {}, 'errors': [], 'updated_at': 0}
+        self.value = {'paths': {}, 'ids': {}, 'imdb': {}, 'seasons': {}, 'errors': [], 'updated_at': 0}
 
     def snapshot(self):
         with self.lock:
             return self.value
 
     def refresh(self):
-        index = {'paths': {}, 'ids': {}, 'imdb': {}, 'errors': [], 'updated_at': int(time.time())}
+        index = {'paths': {}, 'ids': {}, 'imdb': {}, 'seasons': {}, 'errors': [], 'updated_at': int(time.time())}
         conflicts = {key: set() for key in ('paths', 'ids', 'imdb')}
 
         def put(group, key, kp):
@@ -162,6 +202,24 @@ class Catalog:
                         card(transform(row))
             except Exception as error:
                 index['errors'].append(name + ': ' + str(error))
+
+        # Last aired season is a fallback; the client can request its watched season.
+        database = CATALOG / 'recommender.sqlite3'
+        if database.is_file():
+            try:
+                with sqlite3.connect(database.as_uri() + '?mode=ro', uri=True, timeout=3) as conn:
+                    if conn.execute("SELECT 1 FROM sqlite_master WHERE name='episode_schedules'").fetchone():
+                        today = date.today().isoformat()
+                        for kp, payload in conn.execute('SELECT kp_id,episodes_json FROM episode_schedules'):
+                            try:
+                                aired = [int(e['season']) for e in json.loads(payload or '[]')
+                                         if e.get('date') and e['date'] <= today and 0 < int(e.get('season', 0)) <= 999]
+                                if aired:
+                                    index['seasons'][str(kp)] = max(aired)
+                            except (ValueError, TypeError, KeyError):
+                                pass
+            except Exception as error:
+                index['errors'].append('seasons: ' + str(error))
 
         try:
             from urllib.parse import urlencode
@@ -220,15 +278,17 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = urlsplit(self.path).path
         if path == '/health':
-            payload = {'ok': True, 'version': '0.1.1', 'saved': len(list(POSTERS.root.glob('*.img'))),
+            payload = {'ok': True, 'version': '0.2.0', 'saved': len(list(POSTERS.root.glob('*.img'))),
                        'catalog_errors': CATALOG_INDEX.snapshot()['errors']}
             self.send(200, json.dumps(payload).encode(), 'application/json')
         elif path == '/index.json':
             self.send(200, json.dumps(CATALOG_INDEX.snapshot()).encode(), 'application/json')
         elif re.fullmatch(r'/poster/kp/[1-9][0-9]{0,9}\.jpg', path):
             try:
-                data, mime, cached = POSTERS.get(path.rsplit('/', 1)[1][:-4])
-                self.send(200, data, mime, 'public, max-age=86400', '"' + hashlib.sha256(data).hexdigest() + '"')
+                query = parse_qs(urlsplit(self.path).query)
+                season = int(query.get('season', ['0'])[0])
+                data, mime, cached = POSTERS.get(path.rsplit('/', 1)[1][:-4], season)
+                self.send(200, data, mime, 'public, max-age=3600', '"' + hashlib.sha256(data).hexdigest() + '"')
             except Exception as error:
                 print('poster error:', path, str(error), flush=True)
                 self.send(502, b'Poster unavailable; retry later', 'text/plain')
