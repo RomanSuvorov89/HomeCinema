@@ -1,0 +1,1169 @@
+(function () {
+  'use strict';
+  // roman-home-layout-v074
+
+  var DATA_URL = '__RECOMMENDER_PUBLIC_URL__/data.json';
+  var CARD_RATINGS_URL = '__RECOMMENDER_PUBLIC_URL__/card-ratings.json';
+  var COMPONENT = 'roman_kinopoisk';
+  var SHELF_COMPONENT = 'roman_home_shelf';
+  var REVIEW_COMPONENT = 'roman_recommendation_review';
+  var reviewItems = {};
+  var reviewCards = {};
+  var reviewLabels = {want: 'Хочу посмотреть', not_interested: 'Не интересно', seen: 'Уже смотрел'};
+  var reviewBase = DATA_URL.replace(/\/data\.json$/, '');
+  window.RomanTracksApi = reviewBase;
+  var reviewMissing = {};
+
+  function filterReviewItems(items, filters) {
+    var result = items.filter(function (item) {
+      var year = Number(item.release_year || 0), current = new Date().getFullYear();
+      if (filters.period === 'recent' && !(year >= current-4 && year <= current)) return false;
+      if (filters.period === 'archive' && !(year > 0 && year < current-4)) return false;
+      return (!filters.type || item.media_type === filters.type) &&
+        (!filters.year || Number(item.release_year) === Number(filters.year)) &&
+        (!filters.rating || Number(item.kp_rating || 0) >= Number(filters.rating)) &&
+        (!filters.country || (item.countries || []).indexOf(filters.country) !== -1) &&
+        (!filters.genre || (item.genres || []).indexOf(filters.genre) !== -1) &&
+        (!filters.status || (filters.status === 'new' ? !item.feedback : item.feedback === filters.status));
+    });
+    var key = {year:'release_year', rating:'kp_rating', votes:'kp_vote_count', relevance:'final_score'}[filters.sort || 'relevance'];
+    result.sort(function (a, b) {
+      if (filters.sort === 'title') return String(a.title).localeCompare(String(b.title), 'ru');
+      return Number(b[key] || 0) - Number(a[key] || 0) || Number(a.kp_id) - Number(b.kp_id);
+    });
+    return result;
+  }
+
+  function openReviewList(period) {
+    Lampa.Activity.push({url:'', title:'Рекомендация AI', component:REVIEW_COMPONENT, page:1,
+      review_period:typeof period === 'string' ? period : 'recent'});
+  }
+
+  function showReviewFilters(returnToList, selectedField) {
+    cachedReviewReport().then(function (report) {
+      var items = report.items || [];
+      var filters = Lampa.Storage.get('roman_review_filters_v1', {});
+      function values(key) {
+        var unique = {};
+        items.forEach(function (item) {
+          var list = Array.isArray(item[key]) ? item[key] : [item[key]];
+          list.forEach(function (value) { if (value) unique[String(value)] = true; });
+        });
+        return Object.keys(unique).sort(function (a,b) {return key === 'release_year' ? Number(b)-Number(a) : a.localeCompare(b,'ru');})
+          .map(function (value) {return {title:value, value:value};});
+      }
+      var fields = [
+        {key:'period',title:'Период',values:[{title:'Последние пять лет',value:'recent'},{title:'Из прошлых лет',value:'archive'}]},
+        {key:'type',title:'Тип',values:[{title:'Фильмы',value:'movie'},{title:'Сериалы',value:'tv'}]},
+        {key:'year',title:'Год',values:values('release_year')},
+        {key:'rating',title:'Рейтинг КП от',values:[5,6,7,8,9].map(function (v) {return {title:String(v),value:String(v)};})},
+        {key:'country',title:'Страна',values:values('countries')},
+        {key:'genre',title:'Жанр',values:values('genres')},
+        {key:'status',title:'Моя отметка',values:[{title:'Без отметки',value:'new'}].concat(Object.keys(reviewLabels).map(function (key) {return {title:reviewLabels[key],value:key};}))},
+        {key:'sort',title:'Сортировка',values:[{title:'Релевантность',value:'relevance'},{title:'Сначала новые',value:'year'},{title:'Рейтинг КП',value:'rating'},{title:'Количество оценок',value:'votes'},{title:'Название',value:'title'}]}
+      ];
+      function menu() {
+        var rows = [{title:'Показать: ' + filterReviewItems(items,filters).length, key:'show'}];
+        fields.forEach(function (field) {
+          var selected = field.values.filter(function (v) {return v.value === filters[field.key];})[0];
+          rows.push({title:field.title + ': ' + (selected ? selected.title : (field.key === 'sort' ? 'Релевантность' : 'Все')), field:field});
+        });
+        rows.push({title:'Сбросить фильтры',key:'reset'});
+        var missing = Object.keys(reviewMissing);
+        if (missing.length) rows.push({title:'Не удалось сопоставить: ' + missing.length,key:'missing'});
+        Lampa.Select.show({title:'Фильтры рекомендаций',items:rows,onBack:function () {Lampa.Controller.toggle('content');},onSelect:function (row) {
+          if (row.key === 'show') {Lampa.Storage.set('roman_review_filters_v1',filters); if(returnToList) returnToList(); else openReviewList();return;}
+          if (row.key === 'reset') {filters={};Lampa.Storage.set('roman_review_filters_v1',filters);menu();return;}
+          if (row.key === 'missing') {
+            Lampa.Select.show({title:'Не сопоставлены с каталогом Lampa',items:missing.map(function (id) {return {title:reviewMissing[id],subtitle:'Поиск не дал карточку. Это не проверка наличия видео.'};}),onBack:menu,onSelect:menu});return;
+          }
+          var field = row.field;
+          Lampa.Select.show({title:field.title,items:[{title:field.key === 'sort' ? 'Релевантность' : 'Все',value:''}].concat(field.values),onBack:menu,onSelect:function (choice) {
+            filters[field.key]=choice.value; Lampa.Storage.set('roman_review_filters_v1',filters);menu();
+          }});
+        }});
+      }
+      if (selectedField) {
+        var field = fields.filter(function (entry) { return entry.key === selectedField; })[0];
+        Lampa.Select.show({title:field.title,items:[{title:'Все / по умолчанию',value:''}].concat(field.values),
+          onBack:function () {Lampa.Controller.toggle('content');},onSelect:function (choice) {
+            filters[field.key]=choice.value;
+            Lampa.Storage.set('roman_review_filters_v1',filters);
+            returnToList();
+          }});
+      } else menu();
+    }).catch(function (error) {Lampa.Noty.show('Не удалось загрузить фильтры: '+error.message);});
+  }
+
+  function reviewRequest(path, payload) {
+    return new Promise(function(resolve,reject){
+      var request=new Lampa.Reguest();
+      request.timeout(8000);
+      request.silent(reviewBase+path,resolve,function(){reject(new Error('Сервис рекомендаций не ответил'));},
+        payload ? JSON.stringify(payload) : false,
+        payload ? {type:'POST',headers:{'Content-Type':'application/json'}} : {});
+    });
+  }
+
+  var reviewSnapshotFlight=null;
+  function cachedReviewReport() {
+    var key='roman_review_snapshot_v4';
+    var cached=Lampa.Storage.get(key,null);
+    if(!reviewSnapshotFlight) {
+      reviewSnapshotFlight=reviewRequest('/review-cached.json'+(cached && cached.revision ? '?revision='+encodeURIComponent(cached.revision):''))
+        .then(function(report) {
+          if(report.unchanged) return cached;
+          if(report.warming && cached) return cached;
+          if(!report.warming && Array.isArray(report.items)) {
+            try {Lampa.Storage.set(key,report);} catch(error) {}
+          }
+          return report;
+        }).catch(function(error){if(cached)return cached;throw error;})
+        .then(function(report){reviewSnapshotFlight=null;return report;},function(error){reviewSnapshotFlight=null;throw error;});
+    }
+    if(cached && Array.isArray(cached.items)) {
+      // Refresh in the background; never hold a previously opened list behind I/O.
+      reviewSnapshotFlight.catch(function(){});
+      return Promise.resolve(cached);
+    }
+    return reviewSnapshotFlight;
+  }
+
+  function reviewForCard(card) {
+    return card && (reviewItems[String(card.kinopoisk_id || '')] ||
+      reviewCards[(card.media_type || (card.name || card.first_air_date ? 'tv' : 'movie')) + ':' + card.id]);
+  }
+
+  function markReview(element, item) {
+    var view = element && element.querySelector('.card__view');
+    if (!view || !item) return;
+    element.classList.add('roman-review-card');
+    var badge = element.querySelector('.roman-review-mark');
+    if (!badge) {
+      badge = document.createElement('div');
+      badge.className = 'roman-review-mark';
+      badge.style.cssText = 'color:#aac9ef;font-size:.75em;padding-top:.3em;pointer-events:none';
+      element.appendChild(badge);
+    }
+    badge.textContent = item.feedback ? '✓ ' + reviewLabels[item.feedback] : '';
+  }
+
+  function installTailLoading() {
+    var Native=Lampa.InteractionCategory;
+    if(typeof Native!=='function' || Native.romanTailLoading)return;
+    if(!document.getElementById('roman-tail-style')) {
+      var style=document.createElement('style');style.id='roman-tail-style';
+      style.textContent='.roman-loading-tail{display:flex;align-items:center;justify-content:center;min-height:7em;width:100%;clear:both;flex-shrink:0;grid-column:1/-1;pointer-events:none}.roman-loading-tail i{display:block;width:2em;height:2em;border:.2em solid rgba(255,255,255,.2);border-top-color:#fff;border-radius:50%;animation:roman-tail-spin .8s linear infinite}@keyframes roman-tail-spin{to{transform:rotate(360deg)}}';
+      document.head.appendChild(style);
+    }
+    function decorate(comp) {
+      var loaded=false,tail=null,destroyed=false;
+      function hide(){if(tail)tail.remove();tail=null;}
+      function show(){
+        if(destroyed || tail)return;
+        var root=comp.render(),host=root.find('.category__items,.content__items,.items__body,.scroll__body').first();
+        if(!host.length)host=root;
+        tail=$('<div class="roman-loading-tail" role="status" aria-label="Загрузка продолжения"><i></i></div>');
+        host.append(tail);
+      }
+      function wrap(name,transform) {
+        var fn=comp[name],wrapped=typeof fn==='function'?transform(fn):fn;
+        Object.defineProperty(comp,name,{configurable:true,enumerable:true,
+          get:function(){return wrapped;},set:function(value){wrapped=typeof value==='function'?transform(value):value;}});
+      }
+      wrap('build',function(fn){return function(data){var result=fn.apply(this,arguments);if(data && data.results && data.results.length)loaded=true;hide();return result;};});
+      wrap('nextPageReuest',function(fn){return function(params,resolve){
+        show();
+        var args=Array.prototype.slice.call(arguments),answered=false;
+        args[1]=function(){if(answered)return;answered=true;hide();return resolve.apply(this,arguments);};
+        if(typeof args[2]==='function') {var failed=args[2];args[2]=function(){hide();return failed.apply(this,arguments);};}
+        try{return fn.apply(this,args);}catch(error){hide();throw error;}
+      };});
+      // Keep native first-load behavior; only replace blocking loaders after cards exist.
+      if(typeof comp.loading==='function')wrap('loading',function(fn){return function(value){
+        if(loaded && value){show();return;}
+        if(!value)hide();return fn.apply(this,arguments);
+      };});
+      if(typeof comp.destroy==='function')wrap('destroy',function(fn){return function(){destroyed=true;hide();return fn.apply(this,arguments);};});
+      return comp;
+    }
+    function Category(object){return decorate(new Native(object));}
+    Category.prototype=Native.prototype;
+    Category.romanTailLoading=true;
+    Lampa.InteractionCategory=Category;
+  }
+
+  function reviewComponent(object) {
+    var comp = new Lampa.InteractionCategory(object);
+    var originalBuild = comp.build;
+    var originalEmpty = comp.empty;
+    var originalStart = comp.start;
+    function toolbar() {
+      var root = comp.render();
+      if (root.find('.roman-ai-toolbar').length) return;
+      var bar = $('<div class="roman-ai-toolbar"></div>');
+      function reload() {Lampa.Activity.replace({url:'',title:'Рекомендация AI',component:REVIEW_COMPONENT,page:1});}
+      var labels = {period:'Период',type:'Тип',year:'Год',rating:'КП от',country:'Страна',genre:'Жанр',status:'Отметка',sort:'Сортировка'};
+      var values = {recent:'Последние пять лет',archive:'Из прошлых лет',movie:'Фильмы',tv:'Сериалы',new:'Без отметки',relevance:'Релевантность',year:'Сначала новые',rating:'Рейтинг КП',votes:'Число оценок',title:'Название'};
+      Object.keys(labels).forEach(function (key) {
+        var value = filters[key];
+        var text = labels[key] + ': ' + (values[value] || reviewLabels[value] || value || (key === 'sort' ? 'Релевантность' : 'Все'));
+        $('<div class="selector simple-button"></div>').text(text).on('hover:enter',function () {
+          showReviewFilters(reload,key);
+        }).appendTo(bar);
+      });
+      $('<div class="selector simple-button">Сбросить</div>').on('hover:enter',function () {
+        Lampa.Storage.set('roman_review_filters_v1',{});reload();
+      }).appendTo(bar);
+      $('<span>Прогноз ≈ — предварительная личная оценка</span>').appendTo(bar);
+      root.prepend(bar);
+    }
+    comp.build = function (data) { toolbar(); originalBuild.call(this,data); };
+    comp.empty = function () { originalEmpty.call(this); toolbar(); };
+    comp.start = function () {
+      originalStart.call(this);
+      Lampa.Controller.collectionSet(comp.render());
+    };
+    var snapshot = null;
+    var filters = Lampa.Storage.get('roman_review_filters_v1', {});
+    if (object.review_period) {
+      filters=Object.assign({},filters,{period:object.review_period});
+      Lampa.Storage.set('roman_review_filters_v1',filters);
+    }
+    function page(number, done, failed) {
+      if (!snapshot) snapshot = cachedReviewReport();
+      snapshot.then(function (report) {
+        var items = filterReviewItems(report.items || [], filters);
+        items.forEach(function (item) { reviewItems[String(item.kp_id)] = item; });
+        var slice = items.slice((number - 1) * 12, number * 12);
+        var ready=slice.filter(function(item){return item.card;}).map(function(item){
+          return Object.assign({},item.card,{kinopoisk_id:String(item.kp_id)});
+        });
+        resolveAll(slice.filter(function(item){return !item.card;}).map(function (item) {
+          return {kp_id: item.kp_id, title: item.title, year: item.release_year, media_type: item.media_type};
+        }), function (missingCards) {
+          var cards=ready.concat(missingCards).sort(function(a,b){
+            return slice.findIndex(function(i){return String(i.kp_id)===String(a.kinopoisk_id);})-
+                   slice.findIndex(function(i){return String(i.kp_id)===String(b.kinopoisk_id);});
+          });
+          cards.forEach(function (card) {
+            var item = reviewItems[String(card.kinopoisk_id)];
+            if (!item) return;
+            reviewCards[item.media_type + ':' + card.id] = item;
+          });
+          slice.forEach(function (item) {
+            if (!cards.some(function (card) {return String(card.kinopoisk_id) === String(item.kp_id);})) reviewMissing[String(item.kp_id)] = item.title;
+            else delete reviewMissing[String(item.kp_id)];
+          });
+          done({results: filterReleaseCards(cards), page: number, total_pages: Math.max(1, Math.ceil(items.length / 12)),
+            total_results: items.length, nomore: number * 12 >= items.length});
+        });
+      }).catch(function (error) {
+        Lampa.Noty.show('Рекомендации пока недоступны: ' + error.message);
+        if (failed) failed();
+      });
+    }
+    comp.create = function () {
+      page(Number(object.page || 1), this.build.bind(this), this.empty.bind(this));
+    };
+    comp.nextPageReuest = function (params, resolve) {
+      page(Number(params.page || 2), resolve, function () { resolve({results: [], nomore: true}); });
+    };
+    return comp;
+  }
+
+  function addReviewMenu() {
+    $('.menu__item.roman-review,.menu__item.roman-review-filters').remove();
+  }
+
+  function addReviewActions(event) {
+    if (!event || event.type !== 'complite' || !event.data || !event.data.movie) return;
+    $('.button--roman-review').remove();
+    var item = reviewForCard(event.data.movie);
+    if (!item) return;
+    var host = $('.full-start-new__buttons');
+    if (!host.length) host = $('.full-start__buttons');
+    var busy = false;
+    function add(label, action) {
+      var button = $('<div class="full-start__button selector button--roman-review"><span></span></div>');
+      button.attr('style','width:auto!important;min-width:0!important;padding:.7em 1em!important;flex-shrink:0!important');
+      button.find('span').attr('style','display:block!important;opacity:1!important;visibility:visible!important;width:auto!important;max-width:none!important;transform:none!important;margin:0!important');
+      button.find('span').text(label);
+      button.on('hover:enter', action);
+      host.append(button);
+      return button;
+    }
+    var buttons = {};
+    function redraw() {
+      Object.keys(buttons).forEach(function (status) {
+        buttons[status].find('span').text((item.feedback === status ? '✓ ' : '') + reviewLabels[status]);
+      });
+      Array.prototype.forEach.call(document.querySelectorAll('.card'), function (element) {
+        var found = reviewForCard(element.card_data);
+        if (found && found.kp_id === item.kp_id) markReview(element, item);
+      });
+    }
+    Object.keys(reviewLabels).forEach(function (status) {
+      buttons[status] = add(reviewLabels[status], function () {
+        if (busy) return;
+        busy = true;
+        reviewRequest('/review-feedback.json', {kp_id: item.kp_id, status: item.feedback === status ? 'clear' : status})
+          .then(function (result) {
+            item.feedback = result.status;
+            redraw();
+            Lampa.Noty.show(result.status ? 'Сохранено: ' + reviewLabels[result.status] : 'Отметка снята');
+          }).catch(function (error) { Lampa.Noty.show('Не сохранено: ' + error.message); })
+          .then(function () { busy = false; });
+      });
+    });
+    add('Почему предложено', function () {
+      var reasons = item.reasons || {};
+      var lines = [{title: 'Прогноз ≈ ' + Number(item.predicted_rating || 0).toFixed(1), subtitle: 'Предварительный расчёт по вашим предпочтениям. Это не поставленная вами оценка; точность ещё проверяем.'}];
+      (reasons.positive_features || []).forEach(function (feature) {
+        lines.push({title: 'Поддерживает: ' + feature.name, subtitle: 'По вашим оценкам похожих произведений'});
+      });
+      (reasons.negative_features || []).forEach(function (feature) {
+        lines.push({title: 'Снижает интерес: ' + feature.name});
+      });
+      lines.push({title: 'Массовость', subtitle: 'Оценок на Кинопоиске: ' + (item.kp_vote_count || 0)});
+      Lampa.Select.show({title: 'Почему: ' + item.title, items: lines,
+        onSelect: function () { Lampa.Controller.toggle('full'); },
+        onBack: function () { Lampa.Controller.toggle('full'); }});
+    });
+    redraw();
+  }
+
+  // Scope the replacement to CUB home responses, including subsequent row batches.
+  // A failed personal service leaves the original CUB rows usable.
+  function filterReleaseCards(cards) {
+    return (cards || []).filter(function (card) {
+      var quality = String(card.release_quality || card.quality || '').toUpperCase();
+      if (/WEB[- .]?(DL|RIP)|BLU[- .]?RAY|BDRIP|BRRIP|DVDRIP|HDTV/.test(quality)) return true;
+      return !/(^|[^A-Z])(HD)?(TS|CAM|CAMRIP|TC)([^A-Z]|$)|TELESYNC|TELECINE|SCREENER|DVDSCR|WORKPRINT|VHSRIP/.test(quality);
+    });
+  }
+
+  function homeRowKind(row) {
+    var title=String(row.title || '').replace(/<[^>]*>/g,'').replace(/#\{([^}]+)\}/g,function(_,key) {
+      return Lampa.Lang.translate(key);
+    }).trim().toLowerCase();
+    var route=String(row.url || row.name || '').toLowerCase();
+    function label(key) {return String(Lampa.Lang.translate(key)).toLowerCase();}
+    if (/трейлер|trailer/.test(title+' '+route) || title.indexOf(label('title_trailers'))===0) return 'hidden';
+    if (title===label('title_latest') || title===label('title_in_high_quality') ||
+        /^(последни[ее] добавлен|последнее добавление|в высоком качестве|uhd\b)/.test(title) ||
+        /[?&]uhd=true|[?&]sort=latest(?:&|$)/.test(route)) return 'hidden';
+    if (title===label('title_continue') || /продолжить просмотр|продолжение просмотра|continue watching/.test(title) || route==='continue') return 'continue';
+    if (route==='roman-ai://recent' || route==='roman-ai://recommendations') return 'ai';
+    if (title===label('title_fire') || /^огонь[!\s]*$/.test(title) || /top\/fire\//.test(route)) return 'fire';
+    if (title===label('title_now_watch') || /^сейчас смотрят/.test(title) || /sort=now_playing/.test(route)) return 'now';
+    if (route==='roman-ai://archive') return 'archive';
+    if (route==='roman-kp://watchlist' || /^(буду смотреть|запланировано)$/.test(title)) return 'watch';
+    if (title===label('title_recomend_watch') || title==='рекомендуем посмотреть') return 'stock_ai';
+    return 'other';
+  }
+
+  function hiddenHomeRow(row) {return homeRowKind(row)==='hidden';}
+
+  function orderHomeRows(rows) {
+    var ranks={continue:0,ai:1,fire:2,now:3,archive:4,watch:5,stock_ai:1,other:6};
+    var personal=rows.some(function(row) {return homeRowKind(row)==='ai';});
+    var ownWatch=rows.some(function(row) {return row.url==='roman-kp://watchlist';});
+    return rows.filter(function(row) {
+      var kind=homeRowKind(row);
+      return kind!=='hidden' && !(kind==='stock_ai' && personal) &&
+        !(kind==='watch' && ownWatch && row.url!=='roman-kp://watchlist');
+    }).map(function(row,index) {
+      return {row:row,index:index,rank:ranks[homeRowKind(row)]};
+    }).sort(function(a,b) {return a.rank-b.rank || a.index-b.index;})
+      .map(function(item) {return item.row;});
+  }
+
+  function personalizeNow(cards) {
+    return cards.map(function (card,index) {
+      var personal=reviewForCard(card), prediction=personal && personal.predicted_rating;
+      var cached=cacheGet(ratingKey(card));
+      if (cached && cached.predicted_rating != null) prediction=cached.predicted_rating;
+      var score=1-(index / Math.max(1,cards.length))*.25;
+      if (prediction != null) score *= Math.max(.7,Math.min(1.3,1+(prediction-6)*.12));
+      // An existing rating means watched, never a popularity boost.
+      return {card:card,score:score,index:index};
+    }).sort(function(a,b) {return b.score-a.score || a.index-b.index;}).map(function(x) {return x.card;});
+  }
+
+  function openNowShelf() {
+    Lampa.Activity.push({url:'roman-home://now',title:'Сейчас смотрят — для тебя',component:SHELF_COMPONENT,page:1});
+  }
+
+  function shelfComponent(object) {
+    var comp=new Lampa.InteractionCategory(object), snapshot=null;
+    function read() {
+      if(snapshot) return snapshot;
+      var stored=Lampa.Storage.get('roman_home_shelves_v5',{});
+      if(stored.now && stored.now.row && Array.isArray(stored.now.row.results))
+        return snapshot=Promise.resolve(stored.now.row.results.slice());
+      return snapshot=reviewRequest('/home.json').then(function(data){
+        var row=(data.rows || []).find(function(r){return r.kind==='now';});
+        return row && row.results || [];
+      });
+    }
+    function page(number,done,failed) {
+      read().then(function(cards){
+        cards=filterReleaseCards(cards).filter(function(card){
+          return card.roman_review && typeof card.roman_review.predicted_rating==='number';
+        });
+        cards.forEach(function(card){
+          var item=card.roman_review;
+          reviewItems[String(item.kp_id)]=item;
+          reviewCards[(card.media_type || item.media_type)+':'+card.id]=item;
+        });
+        done({results:cards.slice((number-1)*12,number*12),page:number,
+          total_pages:Math.max(1,Math.ceil(cards.length/12)),total_results:cards.length,nomore:number*12>=cards.length});
+      }).catch(function(){if(failed) failed();});
+    }
+    comp.create=function(){page(Number(object.page || 1),this.build.bind(this),this.empty.bind(this));};
+    comp.nextPageReuest=function(params,resolve){page(Number(params.page || 2),resolve,function(){resolve({results:[],nomore:true});});};
+    return comp;
+  }
+
+  function installCatalogPageCache() {
+    var key='roman_catalog_pages_v2', active={};
+    var pages=Lampa.Storage.get(key,{});
+    ['cub','tmdb'].forEach(function(source) {
+      var api=Lampa.Api.sources[source];
+      if(!api || typeof api.list!=='function' || api.list.romanPageCache) return;
+      var native=api.list;
+      api.list=function(params,done,failed) {
+        // Search requests keep their own identity cache; cache browse pages only.
+        if(!params || /search/.test(params.url || '')) return native.apply(this,arguments);
+        // Only request fields belong to a cache key. Activity/DOM objects may
+        // contain cycles and must never enter JSON.stringify.
+        var request={};
+        ['url','page','query','genres','sort','language','region','method'].forEach(function(k){
+          if(params[k]!=null && /^(string|number|boolean)$/.test(typeof params[k])) request[k]=params[k];
+        });
+        if(params.filter && typeof params.filter==='object') {
+          request.filter={};
+          Object.keys(params.filter).sort().forEach(function(k){
+            if(params.filter[k]!=null && /^(string|number|boolean)$/.test(typeof params.filter[k])) request.filter[k]=params.filter[k];
+          });
+        }
+        var id=source+':'+JSON.stringify(request), saved=pages[id], answered=false;
+        if(saved && Array.isArray(saved.data.results)) {answered=true;done(saved.data);}
+        if(answered && active[id]) return;
+        active[id]=true;
+        return native.call(this,params,function(json) {
+          if(json && Array.isArray(json.results)) {
+            pages[id]={at:Date.now(),data:json};
+            var ids=Object.keys(pages).sort(function(a,b){return pages[b].at-pages[a].at;});
+            ids.slice(160).forEach(function(old){delete pages[old];});
+            try {Lampa.Storage.set(key,pages);} catch(error) {}
+          }
+          if(!answered)done(json);
+        },function(error){if(!answered && failed)failed(error);});
+      };
+      api.list.romanPageCache=true;
+    });
+  }
+
+  function installAiHome() {
+    var cub = Lampa.Api.sources.cub;
+    if (!cub || cub.main.romanAiHome) return;
+    var original = cub.main;
+    installCatalogPageCache();
+    ['cub','tmdb'].forEach(function (sourceName) {
+      var api=Lampa.Api.sources[sourceName];
+      if(!api) return;
+      ['get','list'].forEach(function (method) {
+        var originalRequest=api[method];
+        if(typeof originalRequest!=='function' || originalRequest.romanQuality) return;
+        var callbackIndex=method==='get'?2:1;
+        api[method]=function () {
+          var args=Array.prototype.slice.call(arguments),callback=args[callbackIndex];
+          if(typeof callback==='function') args[callbackIndex]=function (json) {
+            if(json && Array.isArray(json.results)) json=Object.assign({},json,{results:filterReleaseCards(json.results)});
+            return callback(json);
+          };
+          return originalRequest.apply(this,args);
+        };
+        api[method].romanQuality=true;
+      });
+    });
+    // Server materializes these rows on a timer; opening Lampa only reads a snapshot.
+    var preview = null;
+    function loadPreview() {
+      if (preview) return preview;
+      preview = new Promise(function (resolve) {
+        var net = new Lampa.Reguest();
+        net.timeout(1200);
+        net.silent(reviewBase + '/home.json', function (snapshot) {
+          if (!snapshot || !Array.isArray(snapshot.rows)) return resolve(null);
+          var rows = snapshot.rows.map(function (row) {
+            row = Object.assign({},row,{results:filterReleaseCards(row.results || [])});
+            row.results.forEach(function(card) {
+              if(card.roman_review) {
+                var item=card.roman_review;
+                reviewItems[String(item.kp_id)]=item;
+                reviewCards[(card.media_type || item.media_type)+':'+card.id]=item;
+              }
+            });
+            if(row.kind==='ai' || row.kind==='archive') {
+              var period=row.kind==='ai'?'recent':'archive';
+              row.url='roman-ai://'+period;row.source='cub';row.page=1;row.total_pages=2;
+              row.params={emit:{onlyMore:function(){openReviewList(period);}}};
+            }
+            if(row.kind==='fire' || row.kind==='now') {
+              row.source='cub';row.page=1;row.total_pages=2;
+              var personalNow=row.kind==='now' && row.results.some(function(c){return c.roman_review && typeof c.roman_review.predicted_rating==='number';});
+              row.url=row.kind==='fire'?'top/fire/movie':personalNow?'roman-home://now':'?sort=now_playing';
+              if(personalNow) row.params={emit:{onlyMore:openNowShelf}};
+              if(row.kind==='fire' && Lampa.Template && Lampa.Template.string) {
+                row.icon_svg=Lampa.Template.string('icon_fire');row.icon_bgcolor='#fff';row.icon_color='#fd4518';
+              }
+            }
+            if(row.kind==='continue') {row.url='continue';row.source='cub';row.page=1;}
+            if(row.kind==='watch') {
+              row.url='roman-kp://watchlist';row.source='cub';row.page=1;row.total_pages=2;
+              row.params={emit:{onlyMore:openWatchlist}};
+            }
+            // Remember valid snapshots even if this startup already displayed local rows.
+            remember(row.kind,row);
+            return row;
+          });
+          resolve(rows);
+        },function(){resolve(null);});
+      });
+      return preview;
+    }
+    // Covers older Lampa versions that use Activity rather than onlyMore.
+    var push = Lampa.Activity.push;
+    Lampa.Activity.push = function (params) {
+      if(params && params.url==='roman-home://now') params=Object.assign({},params,{url:'',title:'Сейчас смотрят — для тебя',component:SHELF_COMPONENT,page:1});
+      if(params && params.url==='roman-kp://watchlist') {
+        params=Object.assign({},params,{url:'',title:'Буду смотреть',component:COMPONENT,page:1});
+      }
+      if (params && /^roman-ai:\/\/(recent|archive|recommendations)$/.test(params.url || '')) {
+        var period=params.url.split('/').pop();
+        params = Object.assign({},params,{url:'',title:'Рекомендация AI',component:REVIEW_COMPONENT,page:1,review_period:period==='archive'?'archive':'recent'});
+      }
+      return push.call(this,params);
+    };
+    // Cache each priority shelf independently; never wait for unrelated shelves.
+    var homeCacheKey='roman_home_shelves_v5';
+    var homeCache=Lampa.Storage.get(homeCacheKey,{});
+    if(!homeCache || typeof homeCache!=='object') homeCache={};
+    function remembered(key) {
+      var row=homeCache[key] && homeCache[key].row;
+      if(!row || !Array.isArray(row.results)) return null;
+      row=Object.assign({},row,{results:row.results.slice()});
+      row.results.forEach(function(card) {
+        if(card.roman_review) {
+          var item=card.roman_review;
+          reviewItems[String(item.kp_id)]=item;
+          reviewCards[(card.media_type || item.media_type)+':'+card.id]=item;
+        }
+      });
+      if(key==='ai' || key==='archive') row.params={emit:{onlyMore:function(){openReviewList(key==='ai'?'recent':'archive');}}};
+      if(key==='now' && row.url==='roman-home://now') row.params={emit:{onlyMore:openNowShelf}};
+      if(key==='watch') row.params={emit:{onlyMore:openWatchlist}};
+      return row;
+    }
+    function remember(key,row) {
+      if(!row || !Array.isArray(row.results)) return;
+      // A valid empty result clears stale content; network failures do not.
+      homeCache[key]={row:row,at:Date.now()};
+      try {Lampa.Storage.set(homeCacheKey,homeCache);} catch(error) {}
+    }
+    function cachedTask(key,loader,callback) {
+      var cached=remembered(key);
+      var answered=false;
+      function answer(row) {if(answered)return;answered=true;callback(row);}
+      if(cached) answer(cached);
+      if(cached) return;
+      if(key==='fire' || key==='now') loadPreview().then(function(rows) {
+        if(Array.isArray(rows)) {
+          var row=rows.find(function(r){return r.kind===key;});
+          if(row) answer(row);
+        }
+      });
+      try {loader(function(row) {
+        if(row && Array.isArray(row.results)) remember(key,row);
+        // Failed requests must not create a persistent empty shelf.
+        if(!answered) answer(row || cached);
+      });} catch(error) {answer(cached);}
+    }
+    function taskKind(task) {
+      var text=Function.prototype.toString.call(task);
+      if(/title_trailers|\btrailers\s*\(|sort=latest|title_latest|title_in_high_quality|uhd=true/.test(text)) return 'hidden';
+      if(/title_continue|continue_watch|Продолжить просмотр/.test(text)) return 'continue';
+      if(/title_fire|top\/fire\/|Огонь!/.test(text)) return 'fire';
+      if(/title_now_watch|sort=now_playing|Сейчас смотрят/.test(text)) return 'now';
+      if(/title_recomend_watch|Рекомендуем посмотреть/.test(text)) return 'stock_ai';
+      if(/Буду смотреть/.test(text)) return 'watch';
+      return 'other';
+    }
+    function personalTask(kind,callback) {
+      cachedTask(kind,function(done) {
+        loadPreview().then(function(rows) {
+          if(!Array.isArray(rows)) return done(null);
+          done(rows.find(function(row){return homeRowKind(row)===kind;}) ||
+            null);
+        },function(){done(null);});
+      },callback);
+    }
+    function watchTask(callback) {
+      cachedTask('watch',function(done) {
+        loadPreview().then(function(rows) {
+          if(!Array.isArray(rows)) return done(null);
+          done(rows.find(function(row){return row.kind==='watch';}) || null);
+        },function(){done(null);});
+      },callback);
+    }
+    var activePlan=null;
+    // Native partNext waits for six callbacks and recursively seeks three rows.
+    // On a clean client that can hold even Continue Watching behind TMDB timeouts.
+    // Keep in-flight tasks for subsequent pages; late replies are never discarded.
+    if (typeof Lampa.Api.partNext==='function' && !Lampa.Api.partNext.romanBoundedHome) {
+      var nativePartNext=Lampa.Api.partNext;
+      Lampa.Api.partNext=function(parts,limit,loaded,empty) {
+        if(!parts.romanHomePlan) return nativePartNext.apply(this,arguments);
+        var pending=parts.filter(function(task){return typeof task==='function';});
+        if(!pending.length) return empty();
+        pending.sort(function(a,b){return (a.romanRank==null?6:a.romanRank)-(b.romanRank==null?6:b.romanRank);});
+        var chosen=pending.slice(0,limit), ended=false, timer;
+        var homeTail=null;
+        if(typeof $==='function') {
+          var root=$('.activity:visible').last();
+          if(root.length){homeTail=$('<div class="roman-loading-tail" role="status" aria-label="Загрузка разделов"><i></i></div>');var host=root.find('.scroll__body').first();(host.length?host:root).append(homeTail);}
+        }
+        function finish() {
+          if(ended)return;ended=true;clearTimeout(timer);
+          if(homeTail && chosen.every(function(task){return task.romanState && task.romanState.done;}))homeTail.remove();
+          var rows=[];
+          chosen.forEach(function(task){
+            var state=task.romanState;
+            if(state && state.done){
+              var index=parts.indexOf(task);if(index>=0)parts[index]=false;
+              if(state.row && state.row.results && state.row.results.length)rows.push(state.row);
+            }
+          });
+          if(rows.length)loaded(rows);else empty();
+        }
+        function check() {
+          if(homeTail && chosen.every(function(task){return task.romanState && task.romanState.done;})){homeTail.remove();homeTail=null;}
+          var readyPrefix=false;
+          for(var i=0;i<chosen.length;i++){
+            var state=chosen[i].romanState;
+            if(!state || !state.done)break;
+            if(state.row && state.row.results && state.row.results.length)readyPrefix=true;
+          }
+          if(readyPrefix || chosen.every(function(task){return task.romanState && task.romanState.done;}))finish();
+        }
+        timer=setTimeout(finish,1800);
+        chosen.forEach(function(task){
+          if(!task.romanState){
+            var state=task.romanState={done:false,row:null};
+            try{task(function(row){state.row=row;state.done=true;check();});}
+            catch(error){state.done=true;}
+          }
+        });
+        check();
+      };
+      Lampa.Api.partNext.romanBoundedHome=true;
+    }
+    if (Lampa.ContentRows && typeof Lampa.ContentRows.call==='function') {
+      var originalRowsCall=Lampa.ContentRows.call;
+      Lampa.ContentRows.call=function(screen,params,calls) {
+        var result=originalRowsCall.apply(this,arguments);
+        var plan=activePlan;
+        if(!plan || screen!=='main' || !Array.isArray(calls)) return result;
+        plan.captured=true;
+        calls.romanHomePlan=plan;
+        var tasks=calls.filter(function(task){return typeof task==='function';}).map(function(task,index) {
+          return {task:task,kind:taskKind(task),index:index};
+        }).filter(function(item){return item.kind!=='hidden' && item.kind!=='stock_ai' && item.kind!=='watch';});
+        if(!tasks.some(function(item){return item.kind==='continue';})) tasks.push({kind:'continue',index:0,task:function(cb){personalTask('continue',cb);}});
+        tasks.push({kind:'ai',index:tasks.length,task:function(cb){personalTask('ai',cb);}});
+        tasks.push({kind:'archive',index:tasks.length,task:function(cb){personalTask('archive',cb);}});
+        tasks.push({kind:'watch',index:tasks.length,task:watchTask});
+        var ranks={continue:0,ai:1,fire:2,now:3,archive:4,watch:5,other:6};
+        tasks.sort(function(a,b){return ranks[a.kind]-ranks[b.kind] || a.index-b.index;});
+        calls.length=0;
+        tasks.forEach(function(item) {
+          if(item.kind!=='other') plan.remaining++;
+          var wrapped=function(callback) {
+            function completed(row) {
+              if(item.kind==='continue') {
+                var extra=remembered('continue');
+                if(extra && extra.results.length) {
+                  row=Object.assign({},row || extra,{title:'Продолжить просмотр'});
+                  var cards=(row.results || []).slice();
+                  extra.results.forEach(function(card) {
+                    if(!cards.some(function(old){return (old.kinopoisk_id && String(old.kinopoisk_id)===String(card.kinopoisk_id)) ||
+                        (String(old.id)===String(card.id) && (old.media_type || 'tv')===(card.media_type || 'tv'));})) cards.push(card);
+                  });
+                  row.results=cards;
+                }
+              }
+              if(item.kind!=='other')plan.remaining--;callback(row);
+            }
+            if(item.kind==='now' || item.kind==='fire') cachedTask(item.kind,item.task,completed);
+            else item.task(completed);
+          };
+          wrapped.romanRank=ranks[item.kind];
+          calls.push(wrapped);
+        });
+        return result;
+      };
+    }
+    cub.main = function (params, done, failed) {
+      var plan={captured:false,remaining:0};
+      var next;
+      function normalize(rows) {
+        return orderHomeRows(rows).map(function(row) {
+          row=Object.assign({},row,{results:filterReleaseCards(row.results)});
+          if(homeRowKind(row)==='now') {
+            if(!row.results.some(function(c){return c.roman_review;})) row.results=personalizeNow(row.results);row.title=Object.keys(reviewItems).length?'Сейчас смотрят — для тебя':'Сейчас смотрят';
+          }
+          return row;
+        }).filter(function(row){return row.results.length;});
+      }
+      function intercept(callback,reject) {return function(rows) {
+        if(!Array.isArray(rows)) return callback(rows);
+        var visible=normalize(rows);
+        if(visible.length) return callback(visible);
+        Promise.resolve().then(function(){
+          if(typeof next==='function') next(intercept(callback,reject),reject || function(){});
+          else if(reject) reject();
+        });
+      };}
+      var previous=activePlan;activePlan=plan;
+      try {next=original.call(this,params,intercept(done,failed),failed);}
+      finally {activePlan=previous;}
+      return function(resolve,reject) {
+        if(typeof next==='function') return next(intercept(resolve,reject),function() {
+          if(reject)reject();
+        });
+        if(reject) reject();
+      };
+    };
+    cub.main.romanAiHome = true;
+    loadPreview();
+  }
+  var data = null;
+  var loading = false;
+  var waiters = [];
+  var network = new Lampa.Reguest();
+  var ratingQueue = [];
+  var ratingActive = 0;
+  var ratingMaxParallel = 2;
+  var ratingCacheTtl = 6 * 60 * 60 * 1000;
+
+  function loadData(done, failed) {
+    if (data) return done(data);
+    waiters.push({ done: done, failed: failed });
+    if (loading) return;
+    loading = true;
+    network.silent(DATA_URL, function (json) {
+      data = json;
+      loading = false;
+      var list = waiters.splice(0);
+      list.forEach(function (item) { item.done(json); });
+    }, function () {
+      loading = false;
+      var list = waiters.splice(0);
+      list.forEach(function (item) { if (item.failed) item.failed(); });
+    });
+  }
+
+  function itemYear(card) {
+    var value = card.release_date || card.first_air_date || '';
+    return parseInt(String(value).slice(0, 4), 10) || 0;
+  }
+
+  function bestResult(item, results) {
+    if (!results || !results.length) return null;
+    var target = parseInt(item.year, 10) || 0;
+    function name(value) {return String(value || '').toLowerCase().replace(/ё/g,'е').replace(/[^a-zа-я0-9]+/g,'');}
+    var wanted=name(item.title);
+    var matching=results.filter(function (card) {
+      return (!target || itemYear(card)===target) &&
+        [card.title,card.name,card.original_title,card.original_name].some(function (title) {return wanted && name(title)===wanted;});
+    });
+    return matching.length===1 ? matching[0] : null;
+  }
+
+  function resolveItem(item, done) {
+    var cache = Lampa.Storage.get('roman_kinopoisk_cards_v2', {});
+    var cached = cache[String(item.kp_id)];
+    if (cached) return done(cached);
+
+    var type = item.media_type === 'tv' ? 'tv' : 'movie';
+    var filter = {};
+    if (item.year) filter[type === 'tv' ? 'first_air_date_year' : 'year'] = item.year;
+
+    var sources = Lampa.Api.sources;
+    var sourceName = sources.cub && typeof sources.cub.list === 'function' ? 'cub' : 'tmdb';
+    var catalog = sources[sourceName];
+    var settled = false, timeout;
+    function answer(card) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      done(card);
+    }
+    if (!catalog || typeof catalog.list !== 'function') {
+      if (window.romanClientReport) window.romanClientReport('catalog', 'Public list API unavailable');
+      return answer(null);
+    }
+    timeout = setTimeout(function () { answer(null); }, 5000);
+    try {
+      catalog.list({
+        url: 'search/' + type,
+        query: encodeURIComponent(item.title || ''),
+        page: 1,
+        filter: filter
+      }, function (json) {
+        if (settled) return;
+        var card = bestResult(item, json && json.results);
+        if (card) {
+          card.media_type = type;
+          card.kinopoisk_id = String(item.kp_id);
+          card.source = sourceName;
+          // Other parallel searches may have updated the cache since this one began.
+          var latest = Lampa.Storage.get('roman_kinopoisk_cards_v2', {});
+          latest[String(item.kp_id)] = card;
+          Lampa.Storage.set('roman_kinopoisk_cards_v2', latest);
+        }
+        answer(card);
+      }, function () { answer(null); });
+    } catch (error) {
+      if (window.romanClientReport) window.romanClientReport('catalog', error.message || error);
+      answer(null);
+    }
+  }
+
+  function resolveAll(items, complete) {
+    var results = new Array(items.length);
+    var next = 0;
+    var active = 0;
+    var finished = 0;
+
+    function pump() {
+      if (finished === items.length) {
+        complete(results.filter(function (item) { return !!item; }));
+        return;
+      }
+      while (active < 4 && next < items.length) {
+        (function (index) {
+          active++;
+          resolveItem(items[index], function (card) {
+            results[index] = card;
+            active--;
+            finished++;
+            pump();
+          });
+        })(next++);
+      }
+    }
+
+    if (!items.length) return complete([]);
+    pump();
+  }
+
+  function component(object) {
+    var comp = new Lampa.InteractionCategory(object);
+    comp.create = function () {
+      var self = this;
+      loadData(function (json) {
+        resolveAll(json.watchlist || [], function (cards) {
+          self.build({
+            results: filterReleaseCards(cards),
+            page: 1,
+            total_pages: 1,
+            total_results: cards.length,
+            nomore: true
+          });
+        });
+      }, this.empty.bind(this));
+    };
+    comp.nextPageReuest = function (params, resolve) {
+      resolve({ results: [], page: 1, nomore: true });
+    };
+    return comp;
+  }
+
+  function openWatchlist() {
+    Lampa.Activity.push({
+      url: '',
+      title: 'Кинопоиск: Буду смотреть',
+      component: COMPONENT,
+      page: 1
+    });
+  }
+
+  function addMenu() {
+    addReviewMenu();
+    if ($('.menu__item.roman-kinopoisk').length) return;
+    var button = $('<li class="menu__item selector roman-kinopoisk">' +
+      '<div class="menu__ico"><svg viewBox="0 0 64 64" fill="currentColor"><path d="M9 5h11v22L40 5h14L31 30l25 29H41L20 34v25H9z"/></svg></div>' +
+      '<div class="menu__text">Кинопоиск</div></li>');
+    button.on('hover:enter', openWatchlist);
+    $('.menu .menu__list').eq(0).append(button);
+  }
+
+  function addRatingToFull(event) {
+    if (!event || event.type !== 'complite' || !event.data || !event.data.movie) return;
+    $('.button--roman-kp-rating').remove();
+    loadData(function (json) {
+      var movie = event.data.movie;
+      var kp = String(movie.kinopoisk_id || '');
+      if (!kp) return;
+      var ratings = json.ratings || [];
+      var found = null;
+      for (var i = 0; i < ratings.length; i++) {
+        if (String(ratings[i].kp_id) === kp) {
+          found = ratings[i];
+          break;
+        }
+      }
+      if (!found) return;
+      var button = $('<div class="full-start__button selector button--roman-kp-rating">' +
+        '<svg viewBox="0 0 64 64" fill="currentColor"><path d="M32 4l8.7 17.6L60 24.4 46 38l3.3 19.2L32 48.1 14.7 57.2 18 38 4 24.4l19.3-2.8z"/></svg>' +
+        '<span>Моя оценка: ' + found.rating + '/10</span></div>');
+      $('.full-start-new__buttons').append(button);
+    });
+  }
+
+  function installRatingStyle() {
+    if (document.getElementById('roman-card-ratings-style')) return;
+    var style = document.createElement('style');
+    style.id = 'roman-card-ratings-style';
+    style.textContent = '' +
+      '.roman-unified-ratings .card__vote{display:none!important}' +
+      '.roman-card-ratings{position:absolute;right:.42em;top:.42em;z-index:5;' +
+      'display:flex;flex-direction:column;align-items:stretch;gap:.18em;pointer-events:none}' +
+      '.roman-card-rating{min-width:3.7em;padding:.22em .38em;border-radius:.25em;' +
+      'box-sizing:border-box;color:#fff;font-size:.62em;font-weight:700;line-height:1.25;' +
+      'text-align:center;text-shadow:0 1px 2px rgba(0,0,0,.75);box-shadow:0 1px 4px rgba(0,0,0,.35)}' +
+      '.roman-card-rating--kp{background:#f28c18}' +
+      '.roman-card-rating--imdb{background:#c79b13}' +
+      '.roman-card-rating--tmdb{background:#216b70}' +
+      '.roman-card-rating--mine{background:#7b55d9}' +
+      '.roman-card-rating--prediction{background:#16736c;border:1px solid #8ee8d7}' +
+      '.roman-ai-toolbar{display:flex;align-items:center;gap:1em;padding:1em 1.5em;flex-wrap:wrap}' +
+      '.roman-ai-toolbar button{font:inherit;color:inherit;cursor:pointer;border:0}' +
+      '.roman-ai-toolbar span{opacity:.7;font-size:.8em}' +
+      '.roman-card-rating--platform{background:#222;border:1px solid rgba(255,255,255,.35);font-size:.58em}' +
+      '.roman-platform--apple_tv{background:#050505;color:#fff}' +
+      '.roman-platform--netflix{background:#fff;color:#e50914;text-shadow:none;font-size:.78em}' +
+      '.roman-platform--prime_video{background:#071a2b;color:#25a8e0}' +
+      '.roman-platform--disney_plus{background:#112a67;color:#fff}' +
+      '.roman-platform--hulu{background:#101a13;color:#1ce783}' +
+      '.roman-platform--max{background:#5b20d6;color:#fff}' +
+      '.roman-platform--paramount_plus{background:#1464f4;color:#fff}' +
+      '.roman-platform--peacock{background:#111;color:#fff}' +
+      '.roman-platform--kinopoisk{background:#111;color:#ff7a00}' +
+      '.roman-platform--okko{background:#261343;color:#b89cff}' +
+      '.roman-platform--start{background:#111;color:#ff264d}' +
+      '.roman-platform--premier{background:#3b175f;color:#fff}' +
+      '.roman-platform--wink{background:#6b2cff;color:#fff}' +
+      '.roman-platform--hbo{background:#050505;color:#fff}' +
+      '.roman-platform--amc{background:#fff;color:#111;text-shadow:none}' +
+      '.roman-platform--fx{background:#111;color:#fff}' +
+      '.roman-platform--bbc{background:#fff;color:#111;text-shadow:none}' +
+      '.card.focus .roman-card-rating,.card.hover .roman-card-rating{transform:scale(1.03)}';
+    document.head.appendChild(style);
+  }
+
+  function ratingKey(card) {
+    var year = String(card.release_date || card.first_air_date || '').slice(0, 4);
+    if (card.kinopoisk_id) return 'kp:' + card.kinopoisk_id;
+    if (card.imdb_id) return 'imdb:' + card.imdb_id;
+    if (card.id) return (card.name || card.first_air_date ? 'tv:' : 'movie:') + card.id;
+    return 'title:' + String(card.original_title || card.title || '').toLowerCase() + ':' + year;
+  }
+
+  function ratingCache() {
+    return Lampa.Storage.cache('roman_card_ratings_v10', 800, {});
+  }
+
+  function cacheGet(key) {
+    var cache = ratingCache();
+    var item = cache[key];
+    if (!item || Date.now() - item.saved_at > ratingCacheTtl) return null;
+    return item.data;
+  }
+
+  function cacheSet(key, value) {
+    var cache = ratingCache();
+    cache[key] = { saved_at: Date.now(), data: value };
+    Lampa.Storage.set('roman_card_ratings_v10', cache);
+  }
+
+  function ratingText(label, value) {
+    var number = parseFloat(value);
+    if (!isFinite(number) || number <= 0) return '';
+    return label + ' ' + number.toFixed(1);
+  }
+
+  function ownRatingText(value) {
+    var number = parseInt(value, 10);
+    return isFinite(number) && number > 0 ? 'МОЯ ' + number : '';
+  }
+
+  function platformText(data) {
+    if (!data.origin_platform || parseFloat(data.origin_platform_confidence || 0) < 0.85) return '';
+    var labels = {
+      apple_tv: 'Apple TV+', netflix: 'N', prime_video: 'prime video',
+      disney_plus: 'Disney+', hulu: 'hulu', max: 'max',
+      paramount_plus: 'Paramount+', peacock: 'peacock', kinopoisk: 'КИНОПОИСК',
+      okko: 'okko', start: 'START', premier: 'PREMIER', wink: 'WINK',
+      hbo: 'HBO', amc: 'AMC', fx: 'FX', bbc: 'BBC', showtime: 'SHOWTIME',
+      starz: 'STARZ', nbc: 'NBC', cbs: 'CBS', abc: 'ABC', fox: 'FOX', cw: 'THE CW'
+    };
+    return labels[data.origin_platform] || data.origin_platform_label || '';
+  }
+
+  function drawCardRatings(element, data) {
+    if (!element) return;
+    var card = element.card_data || {};
+    if (data && data.found !== undefined) element.romanRatingsData = data;
+    data = Object.assign({}, reviewForCard(card) || {}, element.romanRatingsData || {}, data || {});
+    var view = element.querySelector('.card__view');
+    if (!view) return;
+    element.classList.add('roman-unified-ratings');
+    var nativeVote = view.querySelector('.card__vote');
+    if (nativeVote) nativeVote.style.display = 'none';
+    var fire = view.querySelector('.roman-fire-count');
+    if (card.cub_hundred_fire && !fire) {
+      fire = document.createElement('div');fire.className='roman-fire-count';
+      fire.style.cssText='position:absolute;bottom:.3em;right:.3em;background:#15151ccc;color:white;border-radius:.5em;padding:.2em .4em';
+      fire.textContent='🔥 '+(Number(card.cub_hundred_fire)>=1000 ? (Number(card.cub_hundred_fire)/1000).toFixed(1)+'K' : card.cub_hundred_fire);
+      view.appendChild(fire);
+    }
+    var old = view.querySelector('.roman-card-ratings');
+    if (old) old.remove();
+    var values = [
+      ['platform', platformText(data), data.origin_platform],
+      ['kp', ratingText('КП', data.kp_rating), ''],
+      ['imdb', ratingText('IMDb', data.imdb_rating), ''],
+      ['tmdb', ratingText(card.cub_hundred_rating ? 'CUB' : 'Каталог', card.cub_hundred_rating || card.vote_average), ''],
+      ['mine', ownRatingText(data.my_rating), ''],
+      ['prediction', ratingText('Прогноз ≈', data.predicted_rating), '']
+    ].filter(function (item) { return !!item[1]; });
+    if (!values.length) return;
+    var wrap = document.createElement('div');
+    wrap.className = 'roman-card-ratings';
+    values.forEach(function (item) {
+      var badge = document.createElement('div');
+      badge.className = 'roman-card-rating roman-card-rating--' + item[0];
+      if (item[0] === 'platform' && item[2]) badge.className += ' roman-platform--' + item[2];
+      badge.textContent = item[1];
+      wrap.appendChild(badge);
+    });
+    view.appendChild(wrap);
+  }
+
+  function requestParams(card) {
+    var type = card.name || card.first_air_date || card.media_type === 'tv' ? 'tv' : 'movie';
+    var year = String(card.release_date || card.first_air_date || card.last_air_date || '').slice(0, 4);
+    return [
+      'tmdb_id=' + encodeURIComponent(card.id || card.tmdb_id || ''),
+      'kp_id=' + encodeURIComponent(card.kinopoisk_id || ''),
+      'imdb_id=' + encodeURIComponent(card.imdb_id || ''),
+      'cached=1',
+      'type=' + type,
+      'title=' + encodeURIComponent(card.title || card.name || ''),
+      'original_title=' + encodeURIComponent(card.original_title || card.original_name || ''),
+      'year=' + encodeURIComponent(year)
+    ].join('&');
+  }
+
+  function pumpRatingQueue() {
+    while (ratingActive < ratingMaxParallel && ratingQueue.length) {
+      (function (job) {
+        ratingActive++;
+        var request = new Lampa.Reguest();
+        request.timeout(20000);
+        request.silent(CARD_RATINGS_URL + '?' + requestParams(job.card), function (json) {
+          cacheSet(job.key, json || { found: false });
+          job.elements.forEach(function (element) { drawCardRatings(element, json); });
+          ratingActive--;
+          pumpRatingQueue();
+        }, function () {
+          ratingActive--;
+          pumpRatingQueue();
+        });
+      })(ratingQueue.shift());
+    }
+  }
+
+  function processCard(element) {
+    if (element && element.card_data) {
+      var review = reviewForCard(element.card_data);
+      if (review) {
+        markReview(element, review);
+        drawCardRatings(element, {});
+      }
+    }
+    if (!element || element.dataset.romanRatingsQueued === '1') return;
+    var card = element.card_data;
+    if (!card) return;
+    drawCardRatings(element, {});
+    element.dataset.romanRatingsQueued = '1';
+    var key = ratingKey(card);
+    var cached = cacheGet(key);
+    if (cached) {
+      drawCardRatings(element, cached);
+      return;
+    }
+    for (var i = 0; i < ratingQueue.length; i++) {
+      if (ratingQueue[i].key === key) {
+        ratingQueue[i].elements.push(element);
+        return;
+      }
+    }
+    ratingQueue.push({ key: key, card: card, elements: [element] });
+    pumpRatingQueue();
+  }
+
+  function scanCards(root) {
+    if (!root || root.nodeType !== 1) return;
+    if (root.classList && root.classList.contains('card')) processCard(root);
+    if (root.querySelectorAll) {
+      Array.prototype.forEach.call(root.querySelectorAll('.card'), processCard);
+    }
+  }
+
+  function observeCards() {
+    installRatingStyle();
+    scanCards(document.body);
+    var observer = new MutationObserver(function (mutations) {
+      mutations.forEach(function (mutation) {
+        Array.prototype.forEach.call(mutation.addedNodes || [], scanCards);
+      });
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+  }
+
+  function start() {
+    if (window.romanKinopoiskStarted) return;
+    installTailLoading();
+    Lampa.Component.add(COMPONENT, component);
+    Lampa.Component.add(REVIEW_COMPONENT, reviewComponent);
+    Lampa.Component.add(SHELF_COMPONENT, shelfComponent);
+    installAiHome();
+    Lampa.Listener.follow('full', addRatingToFull);
+    Lampa.Listener.follow('full', addReviewActions);
+    observeCards();
+    window.romanKinopoiskStarted = true;
+    loadData(function () {});
+    if (window.appready) addMenu();
+    else Lampa.Listener.follow('app', function (event) {
+      if (event.type === 'ready') addMenu();
+    });
+  }
+
+  start();
+})();

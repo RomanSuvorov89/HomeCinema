@@ -1,0 +1,5 @@
+{
+  "kinopoisk_enabled": true,
+  "refresh_seconds": 900,
+  "cub_base_url": ""
+}

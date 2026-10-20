@@ -1,0 +1,26 @@
+[
+  {
+    "media_type": "tv",
+    "original_title": "The Gentlemen",
+    "release_year": 2024,
+    "platform": "netflix",
+    "label": "Netflix",
+    "source": "https://media.netflix.com/en/only-on-netflix/81437051"
+  },
+  {
+    "media_type": "tv",
+    "original_title": "Silo",
+    "release_year": 2023,
+    "platform": "apple_tv",
+    "label": "Apple TV+",
+    "source": "https://www.apple.com/tv-pr/originals/silo/"
+  },
+  {
+    "media_type": "movie",
+    "original_title": "The Odyssey",
+    "release_year": 2026,
+    "platform": null,
+    "label": null,
+    "source": "https://www.universalpictures.com/movies/the-odyssey"
+  }
+]

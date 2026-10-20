@@ -1,0 +1,94 @@
+services:
+  lampac:
+    image: ghcr.io/lampac-nextgen/lampac:latest
+    container_name: ${STACK_NAME}-lampac
+    restart: unless-stopped
+    environment:
+      TZ: "${TZ:-Europe/Moscow}"
+    shm_size: 1024mb
+    ports:
+      - "${LAMPAC_PORT}:9118"
+    volumes:
+      - ./data/lampac/passwd:/lampac/passwd
+      - ./data/lampac/init.conf:/lampac/init.conf
+      - ./data/lampac/lampainit.js:/lampac/plugins/override/lampainit.js
+      - ./data/lampac/cache:/lampac/cache
+      - ./data/lampac/database:/lampac/database
+    networks:
+      - cinema
+
+  torrserver:
+    image: ghcr.io/yourok/torrserver:latest
+    container_name: ${STACK_NAME}-torrserver
+    environment:
+      TZ: "${TZ:-Europe/Moscow}"
+    restart: unless-stopped
+    ports:
+      - "${TORRSERVER_PORT}:8090"
+    volumes:
+      - ./data/torrserver:/opt/ts
+    networks:
+      - cinema
+
+  recommender:
+    build:
+      context: ./recommender
+    container_name: ${STACK_NAME}-recommender
+    restart: unless-stopped
+    user: "${PUID}:${PGID}"
+    environment:
+      TZ: "${TZ:-Europe/Moscow}"
+      KINOPOISK_PROFILE_ID: "${KINOPOISK_PROFILE_ID}"
+      PROFILE_DISPLAY_NAME: "${PROFILE_DISPLAY_NAME}"
+      LAMPAC_URL: "http://lampac:9118"
+      REFRESH_SECONDS: "86400"
+      ENRICH_SECONDS: "3600"
+      ENRICH_BATCH_SIZE: "${ENRICH_BATCH_SIZE}"
+      ENRICH_WORKERS: "${ENRICH_WORKERS}"
+      ENRICH_CONTINUE_DELAY_SECONDS: "5"
+      KINOPOISK_METADATA_RPM: "${KINOPOISK_METADATA_RPM}"
+      WIKIPEDIA_METADATA_RPM: "${WIKIPEDIA_METADATA_RPM}"
+      TVMAZE_ENABLED: "0"
+      CANDIDATE_ENABLED: "1"
+      CANDIDATE_PAGES: "5"
+      CANDIDATE_REFRESH_SECONDS: "86400"
+      RATING_SCALE_FILE: "/config/rating-scale.json"
+    ports:
+      - "${RECOMMENDER_PORT}:9120"
+    volumes:
+      - ./data/recommender:/data
+      - ../config/rating-scale.json:/config/rating-scale.json:ro
+    depends_on:
+      - lampac
+    networks:
+      - cinema
+
+  poster-cache:
+    build: ./poster-cache
+    container_name: ${STACK_NAME}-posters
+    restart: unless-stopped
+    user: "${PUID}:${PGID}"
+    ports:
+      - "${POSTER_PORT}:9121"
+    environment:
+      TZ: "${TZ:-Europe/Moscow}"
+      LAMPAC_URL: "http://lampac:9118"
+      FAMILY_TOKEN: "${LAMPAC_SYNC_ID}"
+    volumes:
+      - ./data/poster-cache:/data
+      # SQLite WAL requires sidecar access. SQL connections use mode=ro.
+      - ./data/recommender:/catalog:rw
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9121/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    depends_on:
+      - lampac
+      - recommender
+    networks:
+      - cinema
+
+networks:
+  cinema:
+    name: ${STACK_NAME}-network

@@ -1,0 +1,74 @@
+/* roman TV bootstrap 0.7.4; generated payload stays in the server lampainit response. */
+(function () {
+    if (window.romanBootstrap054) return;
+    window.romanBootstrap054 = true;
+    var count = 0, started = Date.now(), wrapped = false;
+    function report(stage, message) {
+        if (count++ >= 30) return;
+        try {
+            var request = new XMLHttpRequest();
+            request.open('POST', '__RECOMMENDER_PUBLIC_URL__/client-diagnostics.json', true);
+            request.timeout = 2500;
+            request.setRequestHeader('Content-Type', 'text/plain');
+            request.send(JSON.stringify({version:'0.7.4', stage:stage,
+                message:String(message || '').replace(/https?:\/\/[^\s)]+/g, function (url) {return url.split('?')[0];}).slice(0,1800),
+                agent:navigator.userAgent.slice(0,400)}));
+        } catch (_) {}
+    }
+    window.romanClientReport = report;
+    window.addEventListener('error', function (e) {
+        report('error', (e.message || 'Resource failed') + ' ' + (e.filename || (e.target && e.target.src) || '') + ':' + (e.lineno || '') + ' ' + (e.error && e.error.stack || ''));
+    }, true);
+    window.addEventListener('unhandledrejection', function (e) {report('promise', e.reason && (e.reason.stack || e.reason.message) || e.reason);});
+    function own(url) {return String(url).split('?')[0].split('#')[0] === '__RECOMMENDER_PUBLIC_URL__/kinopoisk.js' && window.romanEmbedded054;}
+    function wrapLoaders() {
+        if (wrapped || !Lampa.Utils || !Lampa.Platform) return;
+        wrapped = true;
+        var android = Lampa.Platform && Lampa.Platform.is('android');
+        ['putScriptAsync','putScript'].forEach(function (method) {
+            var original = Lampa.Utils[method];
+            if (typeof original !== 'function') return;
+            Lampa.Utils[method] = function (items, complete, error, success, logs) {
+                var pending = items.filter(function (url) {
+                    var external = android && Lampa.Storage && Lampa.Storage.get('player_torrent','android') === 'android';
+                    var skipGst = external && /\/(?:gst\.js|gst\/tracks\.js)(?:[?#]|$)/.test(url);
+                    if (skipGst) report('external player','Skip browser GStreamer: '+url);
+                    if (own(url) || skipGst) {if(success) success(url);return false;}return true;});
+                if (!pending.length) {if (complete) complete();return;}
+                if (!android) return original.call(Lampa.Utils,pending,complete,error,success,logs);
+                var left = pending.length;
+                function load(index) {
+                    var url=pending[index], script=document.createElement('script'), done=false;
+                    var timer=setTimeout(function () {finish(false,'timeout');},6000);
+                    function finish(ok, reason) {
+                        if (done) return;
+                        done=true;clearTimeout(timer);script.onload=script.onerror=null;
+                        if (!ok) {if(script.parentNode) script.parentNode.removeChild(script);report('plugin',url+' '+reason);}
+                        try {if(ok) {if(success) success(url);} else if(error) error(url);}
+                        catch(e) {report('plugin callback',e.stack || e.message);}
+                        left--;
+                        if (method === 'putScript' && index+1 < pending.length) load(index+1);
+                        if (!left && complete) complete();
+                    }
+                    script.async=true;
+                    script.onload=function () {finish(true);};
+                    script.onerror=function () {finish(false,'network');};
+                    script.src=url;document.body.appendChild(script);
+                }
+                if (method === 'putScript') load(0);
+                else pending.forEach(function (_,i) {load(i);});
+            };
+        });
+    }
+    function boot() {
+        if (window.Lampa && document.body) wrapLoaders();
+        if (!(window.Lampa && Lampa.Storage && Lampa.Platform && Lampa.Component && Lampa.Listener && Lampa.Api && Lampa.Api.sources && Lampa.Api.sources.cub && document.body)) {
+            if(Date.now()-started < 15000) setTimeout(boot,20);
+            else report('bootstrap','Lampa API not ready');
+            return;
+        }
+        /* ROMAN_EMBEDDED_PAYLOAD */
+        report('ready','home=' + !!Lampa.Api.sources.cub.main.romanAiHome + '; core=' + !!window.romanKinopoiskStarted + '; player=' + Lampa.Storage.get('player_torrent',''));
+    }
+    boot();
+})();

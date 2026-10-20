@@ -1,0 +1,24 @@
+/* roman-client-defaults-v054: run from lampainit before the first Activity. */
+(function () {
+    if (!window.Lampa || !Lampa.Storage) return;
+    var storage = Lampa.Storage;
+    var android = Lampa.Platform && Lampa.Platform.is('android');
+    if (!storage.get('roman_home_source_v054', false)) {
+        storage.set('source', 'cub');
+        storage.set('roman_home_source_v054', true);
+    }
+    storage.set('torrserver_url', '__TORRSERVER_PUBLIC_URL__');
+    storage.set('torrserver_use_link', 'one');
+    if (android) {
+        storage.set('internal_torrclient', true);
+        if (!storage.get('roman_android_player_v054', false)) {
+            storage.set('player', 'android');
+            storage.set('player_torrent', 'android');
+            storage.set('start_page', 'main');
+            storage.set('roman_android_player_v054', true);
+            if (window.AndroidJS && typeof AndroidJS.clearDefaultPlayer === 'function') {
+                try { AndroidJS.clearDefaultPlayer(); } catch (_) {}
+            }
+        }
+    }
+})();
