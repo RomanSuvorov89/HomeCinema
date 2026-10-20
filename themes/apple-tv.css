@@ -53,9 +53,34 @@ body.homecinema-apple {
 .homecinema-apple .full-start__status,
 .homecinema-apple .full-start__pg { background-color: rgba(255,255,255,.07); border-color: rgba(255,255,255,.25); }
 .homecinema-apple .roman-card-rating {
-  border-radius: .4em; text-shadow: none; box-shadow: 0 .08em .25em rgba(0,0,0,.2);
+  border-radius: .4em; text-shadow: none;
+  background-image: linear-gradient(165deg, rgba(255,255,255,.2), rgba(255,255,255,.025) 55%, rgba(0,0,0,.06));
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.3), inset 0 -1px 0 rgba(0,0,0,.12), 0 .08em .25em rgba(0,0,0,.22);
 }
 /* Source ratings and platform identities keep their own colours and visibility. */
+.homecinema-apple .roman-card-rating--kp { background-color: rgba(242,140,24,.88); }
+.homecinema-apple .roman-card-rating--imdb { background-color: rgba(199,155,19,.88); }
+.homecinema-apple .roman-card-rating--tmdb { background-color: rgba(33,107,112,.88); }
+.homecinema-apple .roman-card-rating--mine { background-color: rgba(123,85,217,.88); }
+.homecinema-apple .roman-card-rating--prediction { background-color: rgba(22,115,108,.88); }
+.homecinema-apple .roman-card-rating--platform { background-color: rgba(34,34,34,.88); }
+.homecinema-apple .roman-platform--apple_tv { background-color: rgba(5,5,5,.88); }
+.homecinema-apple .roman-platform--netflix { background-color: rgba(255,255,255,.94); }
+.homecinema-apple .roman-platform--prime_video { background-color: rgba(7,26,43,.88); }
+.homecinema-apple .roman-platform--disney_plus { background-color: rgba(17,42,103,.88); }
+.homecinema-apple .roman-platform--hulu { background-color: rgba(16,26,19,.88); }
+.homecinema-apple .roman-platform--max { background-color: rgba(91,32,214,.88); }
+.homecinema-apple .roman-platform--paramount_plus { background-color: rgba(20,100,244,.88); }
+.homecinema-apple .roman-platform--peacock { background-color: rgba(17,17,17,.88); }
+.homecinema-apple .roman-platform--kinopoisk { background-color: rgba(17,17,17,.88); }
+.homecinema-apple .roman-platform--okko { background-color: rgba(38,19,67,.88); }
+.homecinema-apple .roman-platform--start { background-color: rgba(17,17,17,.88); }
+.homecinema-apple .roman-platform--premier { background-color: rgba(59,23,95,.88); }
+.homecinema-apple .roman-platform--wink { background-color: rgba(107,44,255,.88); }
+.homecinema-apple .roman-platform--hbo { background-color: rgba(5,5,5,.88); }
+.homecinema-apple .roman-platform--amc { background-color: rgba(255,255,255,.94); }
+.homecinema-apple .roman-platform--fx { background-color: rgba(17,17,17,.88); }
+.homecinema-apple .roman-platform--bbc { background-color: rgba(255,255,255,.94); }
 .homecinema-apple .settings-param,
 .homecinema-apple .selectbox-item,
 .homecinema-apple .simple-button { border-radius: .65em; }
