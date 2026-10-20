@@ -76,3 +76,21 @@ def review_data(connection, profile_id, report):
         items.append(item)
     return {"profile_id": profile_id, "items": items, "catalog": report.get("catalog", {}),
             "generated_at": report.get("generated_at"), "stage": "review_only"}
+
+
+def home_snapshot(connection, cache, profile_id):
+    snapshot=cache.snapshot(profile_id) if cache else {
+        "profile_id":profile_id,"rows":[],"status":[],"version":1}
+    hidden=hidden_home_ids(connection,profile_id)
+    snapshot['hidden_ids']=hidden
+    for row in snapshot['rows']:
+        if row.get('kind') in ('continue','ai','archive','now'):
+            row['results']=[card for card in row.get('results',[])
+                            if str(card.get('kinopoisk_id') or card.get('roman_review',{}).get('kp_id') or '') not in hidden]
+    return snapshot
+
+
+def hidden_home_ids(connection, profile_id):
+    exists=connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='recommendation_feedback'").fetchone()
+    return [str(r[0]) for r in connection.execute(
+        "SELECT kp_id FROM recommendation_feedback WHERE profile_id=? AND status='not_interested'",(profile_id,))] if exists else []

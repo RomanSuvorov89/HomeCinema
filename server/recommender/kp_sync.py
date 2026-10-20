@@ -1804,6 +1804,8 @@ HOME_CACHE = None
 def rated_airing_series(connection, profile_id, today=None):
     """A rating is evidence of interest, not a fabricated playback position."""
     from datetime import date, timedelta
+    from review_api import hidden_home_ids
+    hidden=set(hidden_home_ids(connection,profile_id))
     today=today or date.today()
     lower=(today-timedelta(days=ACTIVE_RECENT_DAYS)).isoformat()
     upper=(today+timedelta(days=ACTIVE_NEXT_DAYS)).isoformat()
@@ -1817,7 +1819,7 @@ def rated_airing_series(connection, profile_id, today=None):
           AND m.media_type='tv' AND st.active_from IS NOT NULL AND st.active_from<=?
           AND ((st.next_air_date BETWEEN ? AND ?) OR (st.last_air_date BETWEEN ? AND ?))
         ORDER BY COALESCE(st.next_air_date,st.last_air_date) DESC,m.kp_id
-        """,(profile_id,today.isoformat(),lower,upper,lower,today.isoformat()))]
+        """,(profile_id,today.isoformat(),lower,upper,lower,today.isoformat())) if str(row["kp_id"]) not in hidden]
 
 
 def home_personal_data():
@@ -1960,8 +1962,12 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/home.json":
             # Read-only: never trigger fetching, scoring or cache rebuilding here.
-            self.review_response(200, HOME_CACHE.snapshot(PROFILE_ID) if HOME_CACHE else
-                {"profile_id":PROFILE_ID,"rows":[],"status":[],"version":1})
+            from review_api import home_snapshot
+            connection=direct_connection()
+            try:
+                self.review_response(200, home_snapshot(connection, HOME_CACHE, PROFILE_ID))
+            finally:
+                connection.close()
             return
         if path == "/client-diagnostics.json":
             with CLIENT_DIAGNOSTICS_LOCK:

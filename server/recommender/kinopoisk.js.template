@@ -14,6 +14,22 @@
   window.RomanTracksApi = reviewBase;
   var reviewMissing = {};
 
+  var homeFeedbackRevision = 0;
+  function hiddenHomeCards(cards) {
+    var hidden = Lampa.Storage.get('roman_hidden_home_v1', {});
+    return (cards || []).filter(function (card) {
+      var item = reviewForCard(card);
+      return !hidden[String(card.kinopoisk_id || (item && item.kp_id) || '')];
+    });
+  }
+  function rememberHidden(kp, status) {
+    var hidden = Lampa.Storage.get('roman_hidden_home_v1', {});
+    if (status === 'not_interested') hidden[String(kp)] = true;
+    else delete hidden[String(kp)];
+    Lampa.Storage.set('roman_hidden_home_v1', hidden);
+    homeFeedbackRevision++;
+  }
+
   function filterReviewItems(items, filters) {
     var result = items.filter(function (item) {
       var year = Number(item.release_year || 0), current = new Date().getFullYear();
@@ -283,40 +299,10 @@
     if (!item) return;
     var host = $('.full-start-new__buttons');
     if (!host.length) host = $('.full-start__buttons');
+    if (!host.length) return;
+    var button = $('<div class="full-start__button selector button--roman-review" title="Для меня"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h16"/><circle cx="9" cy="6" r="2"/><circle cx="15" cy="12" r="2"/><circle cx="9" cy="18" r="2"/></svg><span>Для меня</span></div>');
     var busy = false;
-    function add(label, action) {
-      var button = $('<div class="full-start__button selector button--roman-review"><span></span></div>');
-      button.attr('style','width:auto!important;min-width:0!important;padding:.7em 1em!important;flex-shrink:0!important');
-      button.find('span').attr('style','display:block!important;opacity:1!important;visibility:visible!important;width:auto!important;max-width:none!important;transform:none!important;margin:0!important');
-      button.find('span').text(label);
-      button.on('hover:enter', action);
-      host.append(button);
-      return button;
-    }
-    var buttons = {};
-    function redraw() {
-      Object.keys(buttons).forEach(function (status) {
-        buttons[status].find('span').text((item.feedback === status ? '✓ ' : '') + reviewLabels[status]);
-      });
-      Array.prototype.forEach.call(document.querySelectorAll('.card'), function (element) {
-        var found = reviewForCard(element.card_data);
-        if (found && found.kp_id === item.kp_id) markReview(element, item);
-      });
-    }
-    Object.keys(reviewLabels).forEach(function (status) {
-      buttons[status] = add(reviewLabels[status], function () {
-        if (busy) return;
-        busy = true;
-        reviewRequest('/review-feedback.json', {kp_id: item.kp_id, status: item.feedback === status ? 'clear' : status})
-          .then(function (result) {
-            item.feedback = result.status;
-            redraw();
-            Lampa.Noty.show(result.status ? 'Сохранено: ' + reviewLabels[result.status] : 'Отметка снята');
-          }).catch(function (error) { Lampa.Noty.show('Не сохранено: ' + error.message); })
-          .then(function () { busy = false; });
-      });
-    });
-    add('Почему предложено', function () {
+    function explain() {
       var reasons = item.reasons || {};
       var lines = [{title: 'Прогноз ≈ ' + Number(item.predicted_rating || 0).toFixed(1), subtitle: 'Предварительный расчёт по вашим предпочтениям. Это не поставленная вами оценка; точность ещё проверяем.'}];
       (reasons.positive_features || []).forEach(function (feature) {
@@ -329,8 +315,38 @@
       Lampa.Select.show({title: 'Почему: ' + item.title, items: lines,
         onSelect: function () { Lampa.Controller.toggle('full'); },
         onBack: function () { Lampa.Controller.toggle('full'); }});
+    }
+    function save(status) {
+      if (busy) return;
+      busy = true;
+      reviewRequest('/review-feedback.json', {kp_id: item.kp_id, status: status})
+        .then(function (result) {
+          item.feedback = result.status;
+          rememberHidden(item.kp_id, result.status);
+          Array.prototype.forEach.call(document.querySelectorAll('.card'), function (element) {
+            var found = reviewForCard(element.card_data);
+            if (found && found.kp_id === item.kp_id) markReview(element, item);
+          });
+          Lampa.Noty.show(result.status === 'not_interested' ? 'Скрыто из продолжения и рекомендаций' : result.status ? 'Сохранено: ' + reviewLabels[result.status] : 'Отметка снята');
+        }).catch(function (error) { Lampa.Noty.show('Не сохранено: ' + error.message); })
+        .then(function () { busy = false; });
+    }
+    button.on('hover:enter', function () {
+      var entries = Object.keys(reviewLabels).map(function (status) {
+        return {title: (item.feedback === status ? '✓ ' : '') + reviewLabels[status], status: status,
+          subtitle: status === 'not_interested' ? 'Убрать из продолжения просмотра и рекомендаций' : ''};
+      });
+      if (item.feedback) entries.push({title: 'Снять отметку', status: 'clear'});
+      if (item.predicted_rating != null) entries.push({title: 'Почему предложено', explain: true});
+      Lampa.Select.show({title: 'Для меня', items: entries,
+        onSelect: function (selected) {
+          Lampa.Select.close();
+          if (selected.explain) explain(); else {save(selected.status);Lampa.Controller.toggle('full');}
+        },
+        onBack: function () {Lampa.Select.close();Lampa.Controller.toggle('full');}
+      });
     });
-    redraw();
+    host.append(button);
   }
 
   // Scope the replacement to CUB home responses, including subsequent row batches.
@@ -490,14 +506,20 @@
       });
     });
     // Server materializes these rows on a timer; opening Lampa only reads a snapshot.
-    var preview = null;
+    var preview = null, previewRevision = -1;
     function loadPreview() {
-      if (preview) return preview;
+      if (preview && previewRevision === homeFeedbackRevision) return preview;
+      previewRevision = homeFeedbackRevision;
+      var requestRevision = homeFeedbackRevision;
       preview = new Promise(function (resolve) {
         var net = new Lampa.Reguest();
         net.timeout(1200);
         net.silent(reviewBase + '/home.json', function (snapshot) {
           if (!snapshot || !Array.isArray(snapshot.rows)) return resolve(null);
+          if (requestRevision === homeFeedbackRevision && Array.isArray(snapshot.hidden_ids)) {
+            var hidden = {};snapshot.hidden_ids.forEach(function(kp){hidden[String(kp)]=true;});
+            Lampa.Storage.set('roman_hidden_home_v1',hidden);
+          }
           var rows = snapshot.rows.map(function (row) {
             row = Object.assign({},row,{results:filterReleaseCards(row.results || [])});
             row.results.forEach(function(card) {
@@ -521,6 +543,7 @@
                 row.icon_svg=Lampa.Template.string('icon_fire');row.icon_bgcolor='#fff';row.icon_color='#fd4518';
               }
             }
+            if(/^(continue|ai|archive|now)$/.test(row.kind)) row.results=hiddenHomeCards(row.results);
             if(row.kind==='continue') {row.url='continue';row.source='cub';row.page=1;}
             if(row.kind==='watch') {
               row.url='roman-kp://watchlist';row.source='cub';row.page=1;row.total_pages=2;
@@ -563,6 +586,7 @@
           reviewCards[(card.media_type || item.media_type)+':'+card.id]=item;
         }
       });
+      if(/^(continue|ai|archive|now)$/.test(key)) row.results=hiddenHomeCards(row.results);
       if(key==='ai' || key==='archive') row.params={emit:{onlyMore:function(){openReviewList(key==='ai'?'recent':'archive');}}};
       if(key==='now' && row.url==='roman-home://now') row.params={emit:{onlyMore:openNowShelf}};
       if(key==='watch') row.params={emit:{onlyMore:openWatchlist}};
@@ -705,6 +729,7 @@
                   row.results=cards;
                 }
               }
+              if(row && /^(continue|ai|archive|now)$/.test(item.kind)) row=Object.assign({},row,{results:hiddenHomeCards(row.results)});
               if(item.kind!=='other')plan.remaining--;callback(row);
             }
             if(item.kind==='now' || item.kind==='fire') cachedTask(item.kind,item.task,completed);
@@ -928,10 +953,11 @@
         }
       }
       if (!found) return;
-      var button = $('<div class="full-start__button selector button--roman-kp-rating">' +
-        '<svg viewBox="0 0 64 64" fill="currentColor"><path d="M32 4l8.7 17.6L60 24.4 46 38l3.3 19.2L32 48.1 14.7 57.2 18 38 4 24.4l19.3-2.8z"/></svg>' +
-        '<span>Моя оценка: ' + found.rating + '/10</span></div>');
-      $('.full-start-new__buttons').append(button);
+      var badge = $('<div class="full-start__rate button--roman-kp-rating"><span></span></div>');
+      badge.find('span').text('Моя: ' + found.rating + '/10');
+      var rates = $('.full-start-new__rate-line');
+      if (!rates.length) rates = $('.full-start__rate-line');
+      rates.append(badge);
     });
   }
 
@@ -941,6 +967,10 @@
     style.id = 'roman-card-ratings-style';
     style.textContent = '' +
       '.roman-unified-ratings .card__vote{display:none!important}' +
+      '.card__icon.icon--history{display:none!important}' +
+      '.full-start-new__right{min-width:0}' +
+      '.full-start-new__buttons,.full-start__buttons{flex-wrap:wrap;max-width:100%;row-gap:.65em}' +
+      '.button--roman-kp-rating{color:#d3bfff}' +
       '.roman-card-ratings{position:absolute;right:.42em;top:.42em;z-index:5;' +
       'display:flex;flex-direction:column;align-items:stretch;gap:.18em;pointer-events:none}' +
       '.roman-card-rating{min-width:3.7em;padding:.22em .38em;border-radius:.25em;' +

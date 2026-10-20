@@ -88,6 +88,19 @@ class PrimaryScheduleTest(unittest.TestCase):
         self.assertEqual(c.execute('SELECT last_air_date FROM series_tracking').fetchone()[0],'2026-10-07')
         c.close()
 
+    def test_not_interested_excludes_rated_series_and_clear_restores_it(self):
+        import review_api
+        c=test_candidate_engine.CandidateEngineTests().connection()
+        c.execute("INSERT INTO media(kp_id,title,media_type) VALUES(15,'Hidden series','tv')")
+        c.execute("INSERT INTO user_ratings(profile_id,kp_id,rating) VALUES('owner',15,7)")
+        save_series_tracking(c,'owner',15,series_state({'episodes':[{'season':1,'episode':1,'date':'2026-10-07'}]},date(2026,10,20)))
+        self.assertEqual(len(rated_airing_series(c,'owner',date(2026,10,20))),1)
+        review_api.save_feedback(c,'owner',{'kp_id':15,'status':'not_interested'})
+        self.assertEqual(rated_airing_series(c,'owner',date(2026,10,20)),[])
+        review_api.save_feedback(c,'owner',{'kp_id':15,'status':'clear'})
+        self.assertEqual(len(rated_airing_series(c,'owner',date(2026,10,20))),1)
+        c.close()
+
     def test_new_parser_rechecks_successful_recent_cache(self):
         import time
         from unittest.mock import patch

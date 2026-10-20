@@ -14,7 +14,10 @@ class DiagnosticTest(unittest.TestCase):
         handler.review_response=lambda code,data:responses.append((code,data))
         class FakeCache:
             def snapshot(self,profile): return {"profile_id":profile,"rows":[]}
-        with patch.object(kp_sync,'HOME_CACHE',FakeCache()), patch.object(kp_sync,'direct_connection',side_effect=AssertionError('Unexpected metadata access')):
+        import sqlite3
+        connection=sqlite3.connect(':memory:')
+        connection.set_authorizer(lambda action,*args: sqlite3.SQLITE_OK if action in (sqlite3.SQLITE_SELECT,sqlite3.SQLITE_READ,sqlite3.SQLITE_FUNCTION) else sqlite3.SQLITE_DENY)
+        with patch.object(kp_sync,'HOME_CACHE',FakeCache()), patch.object(kp_sync,'direct_connection',return_value=connection), patch.object(kp_sync,'write_recommendation_reports',side_effect=AssertionError('Unexpected recalculation')):
             handler.do_GET()
         self.assertEqual(responses[0][0],200)
 

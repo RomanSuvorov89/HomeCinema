@@ -45,6 +45,22 @@ class ReviewTests(unittest.TestCase):
         self.assertEqual(c.execute('SELECT rating FROM user_ratings').fetchone()[0], 7)
         c.close()
 
+    def test_hidden_title_is_filtered_from_cached_home_without_changing_rating(self):
+        import copy
+        raw={'rows':[{'kind':kind,'results':[{'kinopoisk_id':'42','title':'Test'},{'kinopoisk_id':'43','title':'Other'}]} for kind in ('continue','ai','now','watch')]}
+        class FakeCache:
+            def snapshot(self,profile):return copy.deepcopy(raw)
+        c=self.connect()
+        review_api.save_feedback(c,'owner',{'kp_id':42,'status':'not_interested'})
+        result=review_api.home_snapshot(c,FakeCache(),'owner')
+        self.assertEqual(result['hidden_ids'],['42'])
+        self.assertEqual([len(r['results']) for r in result['rows']],[1,1,1,2])
+        self.assertEqual(len(review_api.home_snapshot(c,FakeCache(),'other')['rows'][0]['results']),2)
+        review_api.save_feedback(c,'owner',{'kp_id':42,'status':'clear'})
+        self.assertEqual(len(review_api.home_snapshot(c,FakeCache(),'owner')['rows'][0]['results']),2)
+        self.assertEqual(c.execute('SELECT rating FROM user_ratings').fetchone()[0],7)
+        c.close()
+
     def test_actual_http_save_and_read_and_validation(self):
         report_file = Path(self.tmp.name) / 'recommendations.json'
         report_file.write_text(json.dumps({'groups':[{'code':'for_me','items':[{

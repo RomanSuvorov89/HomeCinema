@@ -1,6 +1,6 @@
 const fs=require('fs'),vm=require('vm'),assert=require('assert');
 const source=fs.readFileSync('kinopoisk.js','utf8');
-const filters=source.slice(source.indexOf('  function filterReviewItems('),source.indexOf('  function openReviewList('));
+const filters=source.slice(source.indexOf('  var homeFeedbackRevision'),source.indexOf('  function openReviewList('));
 const code=source.slice(source.indexOf('  function filterReleaseCards('),source.indexOf('  var data = null;'));
 const upstream=fs.readFileSync('tests/fixtures/lampa-home-upstream.js','utf8');
 async function run(fail=false) {
