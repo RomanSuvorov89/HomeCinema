@@ -94,4 +94,4 @@ docker compose --env-file server/.runtime.env -f server/docker-compose.yml logs 
 
 Диагностика DNS TMDB без изменения настроек: `scripts/diagnose-tmdb.sh`; [результаты и ограничения](docs/TMDB_NETWORK.md). Преждевременный VPN-фикс удалён из активного набора; он не устанавливал причину первоначального сбоя.
 
-Приоритет изображений: TMDB через Lampac с сохранением на диск → резервный постер Киноафиши → Кинопоиск. Обновление действующего кэша: `scripts/update-series-assets.sh COMMIT_SHA`. Перед подключением клиента скрипт проверяет реальную загрузку TMDB из контейнера. [Подробности](server/poster-cache/README.md).
+Приоритет изображений: TMDB через проверенные зеркала Lampa с сохранением на диск → резервный постер Киноафиши → Кинопоиск. Обновление действующего кэша: `scripts/update-series-assets.sh COMMIT_SHA`. Перед подключением клиента скрипт проверяет реальную загрузку TMDB из контейнера. [Подробности](server/poster-cache/README.md).

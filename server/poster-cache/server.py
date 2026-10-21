@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Disk-backed Kinopoisk posters. Catalog databases are read only."""
+"""Disk-backed TMDB images and reserve posters. Catalog databases are read only."""
 from datetime import date
 import hashlib
 import json
@@ -12,7 +12,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlsplit, parse_qs, urlencode
+from urllib.parse import urlsplit, parse_qs
 from kinoafisha_posters import KinoafishaPosters
 from urllib.request import urlopen
 
@@ -52,15 +52,15 @@ class Posters:
         source = 'https://st.kp.yandex.net/images/film_iphone/iphone360_' + kp_id + '.jpg'
         return self.download(source)
 
-    def download(self, source, lampac=False):
+    def download(self, source):
         with self.slots:
             fd, temporary = tempfile.mkstemp(prefix='download-', dir=self.root)
             os.close(fd)
             try:
                 result = subprocess.run([
                     'curl', '--fail', '--silent', '--show-error', '--location',
-                    '--proto', '=http,https' if lampac else '=https',
-                    '--proto-redir', '=http,https' if lampac else '=https', '--max-redirs', '4',
+                    '--proto', '=https',
+                    '--proto-redir', '=https', '--max-redirs', '4',
                     '--connect-timeout', '4', '--max-time', '12',
                     '--max-filesize', str(MAX_BYTES), '--output', temporary, source,
                 ], capture_output=True, timeout=15)
@@ -152,7 +152,19 @@ TMDB_PATH = re.compile(r't/p/(?:original|[wh][1-9][0-9]{1,3})/[A-Za-z0-9_-]{1,20
 
 
 class TmdbImages(Posters):
-    """Immutable TMDB assets fetched only through the configured, trusted Lampac."""
+    """Immutable TMDB assets from the same image mirrors used by native Lampa."""
+    mirrors = ('nl.imagetmdb.com', 'de.imagetmdb.com')
+
+    def fetch_image(self, image_path):
+        for mirror in self.mirrors:
+            try:
+                data = self.download('https://' + mirror + '/' + image_path)
+                mime = image_type(data)
+                return data, mime
+            except (OSError, ValueError, subprocess.TimeoutExpired) as error:
+                print('tmdb mirror failed:', mirror, str(error)[-200:], flush=True)
+        raise OSError('TMDB image mirrors unavailable')
+
     def get_image(self, image_path):
         if not TMDB_PATH.fullmatch(image_path):
             raise ValueError('Invalid TMDB image path')
@@ -169,11 +181,7 @@ class TmdbImages(Posters):
                 if self.failures.get(key, 0) > time.monotonic():
                     raise OSError('Previous TMDB download failed; retry after 60 seconds')
             try:
-                source = LAMPAC + '/tmdb/img/' + image_path + '?' + urlencode({
-                    'token': FAMILY, 'uid': 'hcimages'})
-                data = self.download(source, lampac=True)
-                # Validate even when the downloader is replaced in tests.
-                mime = image_type(data)
+                data, mime = self.fetch_image(image_path)
                 fd, temporary = tempfile.mkstemp(prefix='save-', dir=self.root)
                 try:
                     with os.fdopen(fd, 'wb') as stream:
@@ -356,7 +364,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = urlsplit(self.path).path
         if path == '/health':
-            payload = {'ok': True, 'version': '0.3.0', 'saved': len(list(POSTERS.root.glob('*.img'))),
+            payload = {'ok': True, 'version': '0.3.1', 'saved': len(list(POSTERS.root.glob('*.img'))),
                        'tmdb_saved': len(list(TMDB_IMAGES.root.glob('*.img'))) if TMDB_IMAGES else 0,
                        'catalog_errors': CATALOG_INDEX.snapshot()['errors']}
             self.send(200, json.dumps(payload).encode(), 'application/json')
@@ -369,7 +377,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send(200, data, mime, 'public, max-age=31536000, immutable',
                           '\"' + hashlib.sha256(data).hexdigest() + '\"')
             except Exception:
-                # Never log the upstream URL: it contains the configured family token.
+                # Only public TMDB paths are accepted; no caller-provided upstream URL.
                 print('tmdb unavailable:', image_path, flush=True)
                 self.send(502, b'TMDB image unavailable', 'text/plain')
         elif path == '/index.json':

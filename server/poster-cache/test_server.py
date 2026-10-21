@@ -230,8 +230,7 @@ class TestTmdbCache(unittest.TestCase):
             cache=server.TmdbImages(root)
             with patch.object(cache,'download',return_value=png()) as fetch:
                 self.assertEqual(cache.get_image('t/p/w300/frame.jpg'),(png(),'image/png',False))
-                self.assertIn('/tmdb/img/t/p/w300/frame.jpg?',fetch.call_args.args[0])
-                self.assertTrue(fetch.call_args.kwargs['lampac'])
+                self.assertEqual(fetch.call_args.args[0],'https://nl.imagetmdb.com/t/p/w300/frame.jpg')
                 self.assertEqual(cache.get_image('t/p/w300/frame.jpg')[-1],True)
                 fetch.assert_called_once()
             other=server.TmdbImages(root)
@@ -239,33 +238,39 @@ class TestTmdbCache(unittest.TestCase):
                 self.assertEqual(other.get_image('t/p/w300/frame.jpg'),(png(),'image/png',True))
                 fetch.assert_not_called()
 
-    def test_real_downloader_uses_lampac_http_and_validates_image(self):
-        import shutil
-        from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
-        from urllib.parse import urlsplit,parse_qs
-        if not shutil.which('curl'):
-            self.skipTest('curl required')
-        seen=[]
-        class Lampac(BaseHTTPRequestHandler):
-            def do_GET(self):
-                seen.append(self.path)
-                body=png()
-                self.send_response(200)
-                self.send_header('Content-Length',str(len(body)))
-                self.end_headers();self.wfile.write(body)
-            def log_message(self,*args):pass
-        http=ThreadingHTTPServer(('127.0.0.1',0),Lampac)
-        worker=threading.Thread(target=http.serve_forever,daemon=True);worker.start()
-        try:
-            with tempfile.TemporaryDirectory() as root,patch.object(server,'LAMPAC','http://127.0.0.1:'+str(http.server_port)),patch.object(server,'FAMILY','test-family'):
-                cache=server.TmdbImages(root)
-                self.assertEqual(cache.get_image('t/p/w300/real.jpg'),(png(),'image/png',False))
-                self.assertEqual(cache.get_image('t/p/w300/real.jpg')[-1],True)
-                self.assertEqual(len(seen),1)
-                self.assertEqual(urlsplit(seen[0]).path,'/tmdb/img/t/p/w300/real.jpg')
-                self.assertEqual(parse_qs(urlsplit(seen[0]).query),{'token':['test-family'],'uid':['hcimages']})
-        finally:
-            http.shutdown();http.server_close();worker.join()
+    def test_partial_mirror_download_is_discarded_and_next_mirror_is_saved(self):
+        with tempfile.TemporaryDirectory() as root:
+            cache=server.TmdbImages(root)
+            def fake_curl(args, **kwargs):
+                output=Path(args[args.index('--output')+1])
+                if args[-1].startswith('https://nl.'):
+                    output.write_bytes(png()[:200])
+                    class Timeout:
+                        returncode=28
+                        stderr=b'Operation timed out: partial body'
+                    return Timeout()
+                output.write_bytes(png())
+                return subprocess_result()
+            with patch.object(server.subprocess,'run',side_effect=fake_curl) as fetch:
+                self.assertEqual(cache.get_image('t/p/w300/frame.jpg'),(png(),'image/png',False))
+                self.assertEqual([c.args[0][-1] for c in fetch.call_args_list],[
+                    'https://nl.imagetmdb.com/t/p/w300/frame.jpg',
+                    'https://de.imagetmdb.com/t/p/w300/frame.jpg'])
+                for call in fetch.call_args_list:
+                    args=call.args[0]
+                    self.assertIn('--fail',args)
+                    self.assertEqual(args[args.index('--proto')+1],'=https')
+                    self.assertNotIn('--insecure',args)
+            self.assertEqual(len(list(Path(root).glob('*.img'))),1)
+            self.assertEqual(list(Path(root).glob('download-*')),[])
+            self.assertEqual(next(Path(root).glob('*.img')).read_bytes(),png())
+
+    def test_invalid_complete_response_tries_next_mirror(self):
+        with tempfile.TemporaryDirectory() as root:
+            cache=server.TmdbImages(root)
+            with patch.object(cache,'download',side_effect=[b'<html>error</html>',png()]) as fetch:
+                self.assertEqual(cache.get_image('t/p/w300/frame.jpg')[0],png())
+                self.assertEqual(fetch.call_count,2)
 
     def test_no_html_no_traversal_no_arbitrary_upstreams_and_retry_backoff(self):
         with tempfile.TemporaryDirectory() as root:
@@ -274,9 +279,9 @@ class TestTmdbCache(unittest.TestCase):
                 for bad in ['https://evil.test/x.jpg','t/p/w300/../../secret.jpg','t/p/w300/a.jpg?url=http://evil','t/p/w300/a.svg','t/p/w300/%2e%2e.jpg']:
                     with self.assertRaises(ValueError):cache.get_image(bad)
                 fetch.assert_not_called()
-                with self.assertRaises(ValueError):cache.get_image('t/p/w300/missing.jpg')
                 with self.assertRaises(OSError):cache.get_image('t/p/w300/missing.jpg')
-                fetch.assert_called_once()
+                with self.assertRaises(OSError):cache.get_image('t/p/w300/missing.jpg')
+                self.assertEqual(fetch.call_count,2)
             self.assertEqual(list(Path(root).glob('*.img')),[])
 
     def test_concurrent_requests_share_download_but_sizes_and_frames_are_separate(self):

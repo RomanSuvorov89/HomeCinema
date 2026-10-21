@@ -37,7 +37,7 @@ from urllib.request import urlopen
 for attempt in range(20):
     try:
         with urlopen("http://127.0.0.1:9121/health",timeout=3) as response:
-            assert json.load(response)["version"] == "0.3.0"
+            assert json.load(response)["version"] == "0.3.1"
         with urlopen("http://127.0.0.1:9121/series/kp/1.json",timeout=3) as response:
             assert isinstance(json.load(response)["episodes"],list)
         print("Кэш изображений и дат готов")
@@ -50,10 +50,10 @@ docker compose exec -T poster-cache python -c '
 from urllib.request import urlopen
 from server import image_type
 address="http://127.0.0.1:9121/tmdb/image/t/p/w300/yJz0VPfztciUt8cYulEOnk7wQhs.jpg"
-with urlopen(address,timeout=25) as response:
+with urlopen(address,timeout=35) as response:
     data=response.read()
     assert response.status==200
-    print("TMDB через Lampac сохранён:",image_type(data),len(data),"байт")
+    print("TMDB с зеркала сохранён:",image_type(data),len(data),"байт")
 '
 python3 install.py
 # Restore the existing profile-first order without changing catalog server sources.
