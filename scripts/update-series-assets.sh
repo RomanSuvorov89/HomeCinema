@@ -30,12 +30,14 @@ done
 cd "$POSTERS"
 docker compose build poster-cache
 docker compose up -d poster-cache
-# Public cached dates endpoint is checked inside the service; no router changes.
+# Check health first, then real TMDB bytes from inside the new service before changing the client.
 docker compose exec -T poster-cache python -c '
 import json,time
 from urllib.request import urlopen
 for attempt in range(20):
     try:
+        with urlopen("http://127.0.0.1:9121/health",timeout=3) as response:
+            assert json.load(response)["version"] == "0.3.0"
         with urlopen("http://127.0.0.1:9121/series/kp/1.json",timeout=3) as response:
             assert isinstance(json.load(response)["episodes"],list)
         print("Кэш изображений и дат готов")
@@ -43,6 +45,15 @@ for attempt in range(20):
     except Exception:
         if attempt==19: raise
         time.sleep(1)
+'
+docker compose exec -T poster-cache python -c '
+from urllib.request import urlopen
+from server import image_type
+address="http://127.0.0.1:9121/tmdb/image/t/p/w300/yJz0VPfztciUt8cYulEOnk7wQhs.jpg"
+with urlopen(address,timeout=25) as response:
+    data=response.read()
+    assert response.status==200
+    print("TMDB через Lampac сохранён:",image_type(data),len(data),"байт")
 '
 python3 install.py
 # Restore the existing profile-first order without changing catalog server sources.

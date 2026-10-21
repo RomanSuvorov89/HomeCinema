@@ -39,7 +39,7 @@ bash server/healthcheck.sh
 | Lampac / Lampa | 9118 | `server/data/lampac` |
 | TorrServer | 8090 | `server/data/torrserver` |
 | Каталог и рекомендации | 9120 | `server/data/recommender` |
-| Кэш постеров Киноафиши / Кинопоиска | 9121 | `server/data/poster-cache` |
+| Кэш TMDB / Киноафиши / Кинопоиска | 9121 | `server/data/poster-cache` |
 
 На ТВ и ПК откройте `PUBLIC_LAMPAC_URL`. Центральный клиент подключает каталог, Family Sync, постеры, предзагрузку и bridge. Для Windows плеера: [инструкция](docs/WINDOWS.md). Для Android TV: [инструкция](android/README.md).
 
@@ -93,3 +93,5 @@ docker compose --env-file server/.runtime.env -f server/docker-compose.yml logs 
 Исправление изображений внутри сериала и дат в списке торрентов для действующей установки: `scripts/update-series-assets.sh COMMIT_SHA` (с резервными копиями). Настоящие кадры не подменяются: если источник недоступен, показывается обозначенный постер сезона; битый декоративный фон скрывается. Подробности в [описании кэша](server/poster-cache/README.md).
 
 Диагностика DNS TMDB без изменения настроек: `scripts/diagnose-tmdb.sh`; [результаты и ограничения](docs/TMDB_NETWORK.md). Преждевременный VPN-фикс удалён из активного набора; он не устанавливал причину первоначального сбоя.
+
+Приоритет изображений: TMDB через Lampac с сохранением на диск → резервный постер Киноафиши → Кинопоиск. Обновление действующего кэша: `scripts/update-series-assets.sh COMMIT_SHA`. Перед подключением клиента скрипт проверяет реальную загрузку TMDB из контейнера. [Подробности](server/poster-cache/README.md).

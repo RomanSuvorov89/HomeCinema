@@ -20,10 +20,10 @@ if [[ ! -f data/poster-overrides.json ]]; then
 fi
 docker compose up -d --build
 curl --fail --silent --show-error --retry 20 --retry-connrefused --retry-delay 1 --max-time 5 "$base/health"
-printf '\nПроверка загрузки постера Эйфории...\n'
+printf '\nПроверка сохранения изображения TMDB...\n'
 check_file="$(mktemp)"
 trap 'rm -f "$check_file"' EXIT
-if ! curl --fail --silent --show-error --max-time 25 "$base/poster/kp/1178445.jpg" -o "$check_file"; then
+if ! curl --fail --silent --show-error --max-time 25 "$base/tmdb/image/t/p/w300/yJz0VPfztciUt8cYulEOnk7wQhs.jpg" -o "$check_file"; then
     printf 'Загрузка не прошла. Плагин НЕ подключён. Логи: docker logs --tail 40 roman-poster-cache\n' >&2
     exit 1
 fi

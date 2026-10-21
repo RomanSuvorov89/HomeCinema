@@ -12,7 +12,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlsplit, parse_qs
+from urllib.parse import urlsplit, parse_qs, urlencode
 from kinoafisha_posters import KinoafishaPosters
 from urllib.request import urlopen
 
@@ -52,14 +52,15 @@ class Posters:
         source = 'https://st.kp.yandex.net/images/film_iphone/iphone360_' + kp_id + '.jpg'
         return self.download(source)
 
-    def download(self, source):
+    def download(self, source, lampac=False):
         with self.slots:
             fd, temporary = tempfile.mkstemp(prefix='download-', dir=self.root)
             os.close(fd)
             try:
                 result = subprocess.run([
                     'curl', '--fail', '--silent', '--show-error', '--location',
-                    '--proto', '=https', '--proto-redir', '=https', '--max-redirs', '4',
+                    '--proto', '=http,https' if lampac else '=https',
+                    '--proto-redir', '=http,https' if lampac else '=https', '--max-redirs', '4',
                     '--connect-timeout', '4', '--max-time', '12',
                     '--max-filesize', str(MAX_BYTES), '--output', temporary, source,
                 ], capture_output=True, timeout=15)
@@ -144,6 +145,51 @@ class Posters:
                         self.failures = {k: v for k, v in self.failures.items() if v > now}
                 if stale:
                     return stale
+                raise
+
+
+TMDB_PATH = re.compile(r't/p/(?:original|[wh][1-9][0-9]{1,3})/[A-Za-z0-9_-]{1,200}\.(?:jpg|jpeg|png|webp)')
+
+
+class TmdbImages(Posters):
+    """Immutable TMDB assets fetched only through the configured, trusted Lampac."""
+    def get_image(self, image_path):
+        if not TMDB_PATH.fullmatch(image_path):
+            raise ValueError('Invalid TMDB image path')
+        key = hashlib.sha256(image_path.encode()).hexdigest()
+        path = self.root / (key + '.img')
+        with self.locks[int(key[:8], 16) % len(self.locks)]:
+            if path.is_file():
+                try:
+                    data = path.read_bytes()
+                    return data, image_type(data), True
+                except ValueError:
+                    path.unlink(missing_ok=True)
+            with self.state_lock:
+                if self.failures.get(key, 0) > time.monotonic():
+                    raise OSError('Previous TMDB download failed; retry after 60 seconds')
+            try:
+                source = LAMPAC + '/tmdb/img/' + image_path + '?' + urlencode({
+                    'token': FAMILY, 'uid': 'hcimages'})
+                data = self.download(source, lampac=True)
+                # Validate even when the downloader is replaced in tests.
+                mime = image_type(data)
+                fd, temporary = tempfile.mkstemp(prefix='save-', dir=self.root)
+                try:
+                    with os.fdopen(fd, 'wb') as stream:
+                        stream.write(data)
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                    os.replace(temporary, path)
+                finally:
+                    Path(temporary).unlink(missing_ok=True)
+                print('tmdb saved:', image_path, len(data), flush=True)
+                return data, mime, False
+            except Exception:
+                with self.state_lock:
+                    now = time.monotonic()
+                    self.failures = {k:v for k,v in self.failures.items() if v > now}
+                    self.failures[key] = now + 60
                 raise
 
 
@@ -280,6 +326,7 @@ class Catalog:
 
 
 POSTERS = None
+TMDB_IMAGES = None
 CATALOG_INDEX = Catalog()
 
 
@@ -309,9 +356,22 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = urlsplit(self.path).path
         if path == '/health':
-            payload = {'ok': True, 'version': '0.2.1', 'saved': len(list(POSTERS.root.glob('*.img'))),
+            payload = {'ok': True, 'version': '0.3.0', 'saved': len(list(POSTERS.root.glob('*.img'))),
+                       'tmdb_saved': len(list(TMDB_IMAGES.root.glob('*.img'))) if TMDB_IMAGES else 0,
                        'catalog_errors': CATALOG_INDEX.snapshot()['errors']}
             self.send(200, json.dumps(payload).encode(), 'application/json')
+        elif path.startswith('/tmdb/image/'):
+            image_path = path[len('/tmdb/image/'):]
+            if not TMDB_PATH.fullmatch(image_path):
+                return self.send(400, b'Invalid image path', 'text/plain')
+            try:
+                data, mime, cached = TMDB_IMAGES.get_image(image_path)
+                self.send(200, data, mime, 'public, max-age=31536000, immutable',
+                          '\"' + hashlib.sha256(data).hexdigest() + '\"')
+            except Exception:
+                # Never log the upstream URL: it contains the configured family token.
+                print('tmdb unavailable:', image_path, flush=True)
+                self.send(502, b'TMDB image unavailable', 'text/plain')
         elif path == '/index.json':
             self.send(200, json.dumps(CATALOG_INDEX.snapshot()).encode(), 'application/json')
         elif re.fullmatch(r'/series/kp/[1-9][0-9]{0,9}\.json', path):
@@ -336,5 +396,6 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == '__main__':
     POSTERS = Posters(CACHE)
+    TMDB_IMAGES = TmdbImages(CACHE / "tmdb")
     threading.Thread(target=CATALOG_INDEX.run, daemon=True).start()
     ThreadingHTTPServer(('0.0.0.0', 9121), Handler).serve_forever()

@@ -223,5 +223,100 @@ class TestSourceChain(unittest.TestCase):
             with patch.object(cache.kinoafisha,'sources',side_effect=OSError('offline')),patch.object(cache,'fetch',side_effect=OSError('offline')):
                 self.assertEqual(cache.get('42',2),(png(),'image/png',True))
 
+
+class TestTmdbCache(unittest.TestCase):
+    def test_immutable_path_survives_restart_and_offline(self):
+        with tempfile.TemporaryDirectory() as root:
+            cache=server.TmdbImages(root)
+            with patch.object(cache,'download',return_value=png()) as fetch:
+                self.assertEqual(cache.get_image('t/p/w300/frame.jpg'),(png(),'image/png',False))
+                self.assertIn('/tmdb/img/t/p/w300/frame.jpg?',fetch.call_args.args[0])
+                self.assertTrue(fetch.call_args.kwargs['lampac'])
+                self.assertEqual(cache.get_image('t/p/w300/frame.jpg')[-1],True)
+                fetch.assert_called_once()
+            other=server.TmdbImages(root)
+            with patch.object(other,'download',side_effect=OSError('offline')) as fetch:
+                self.assertEqual(other.get_image('t/p/w300/frame.jpg'),(png(),'image/png',True))
+                fetch.assert_not_called()
+
+    def test_real_downloader_uses_lampac_http_and_validates_image(self):
+        import shutil
+        from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
+        from urllib.parse import urlsplit,parse_qs
+        if not shutil.which('curl'):
+            self.skipTest('curl required')
+        seen=[]
+        class Lampac(BaseHTTPRequestHandler):
+            def do_GET(self):
+                seen.append(self.path)
+                body=png()
+                self.send_response(200)
+                self.send_header('Content-Length',str(len(body)))
+                self.end_headers();self.wfile.write(body)
+            def log_message(self,*args):pass
+        http=ThreadingHTTPServer(('127.0.0.1',0),Lampac)
+        worker=threading.Thread(target=http.serve_forever,daemon=True);worker.start()
+        try:
+            with tempfile.TemporaryDirectory() as root,patch.object(server,'LAMPAC','http://127.0.0.1:'+str(http.server_port)),patch.object(server,'FAMILY','test-family'):
+                cache=server.TmdbImages(root)
+                self.assertEqual(cache.get_image('t/p/w300/real.jpg'),(png(),'image/png',False))
+                self.assertEqual(cache.get_image('t/p/w300/real.jpg')[-1],True)
+                self.assertEqual(len(seen),1)
+                self.assertEqual(urlsplit(seen[0]).path,'/tmdb/img/t/p/w300/real.jpg')
+                self.assertEqual(parse_qs(urlsplit(seen[0]).query),{'token':['test-family'],'uid':['hcimages']})
+        finally:
+            http.shutdown();http.server_close();worker.join()
+
+    def test_no_html_no_traversal_no_arbitrary_upstreams_and_retry_backoff(self):
+        with tempfile.TemporaryDirectory() as root:
+            cache=server.TmdbImages(root)
+            with patch.object(cache,'download',return_value=b'<html>not an image</html>') as fetch:
+                for bad in ['https://evil.test/x.jpg','t/p/w300/../../secret.jpg','t/p/w300/a.jpg?url=http://evil','t/p/w300/a.svg','t/p/w300/%2e%2e.jpg']:
+                    with self.assertRaises(ValueError):cache.get_image(bad)
+                fetch.assert_not_called()
+                with self.assertRaises(ValueError):cache.get_image('t/p/w300/missing.jpg')
+                with self.assertRaises(OSError):cache.get_image('t/p/w300/missing.jpg')
+                fetch.assert_called_once()
+            self.assertEqual(list(Path(root).glob('*.img')),[])
+
+    def test_concurrent_requests_share_download_but_sizes_and_frames_are_separate(self):
+        with tempfile.TemporaryDirectory() as root:
+            cache=server.TmdbImages(root)
+            with patch.object(cache,'download',return_value=png()) as fetch:
+                with ThreadPoolExecutor(max_workers=6) as pool:
+                    list(pool.map(cache.get_image,['t/p/w300/frame.jpg']*6))
+                fetch.assert_called_once()
+                cache.get_image('t/p/w500/frame.jpg')
+                cache.get_image('t/p/w300/other-frame.jpg')
+                self.assertEqual(fetch.call_count,3)
+                self.assertEqual(len(list(Path(root).glob('*.img'))),3)
+
+    def test_http_endpoint_returns_image_etag_and_502_never_html_success(self):
+        from http.server import ThreadingHTTPServer
+        from urllib.request import Request,urlopen
+        from urllib.error import HTTPError
+        with tempfile.TemporaryDirectory() as root:
+            cache=server.TmdbImages(root)
+            with patch.object(server,'TMDB_IMAGES',cache),patch.object(cache,'download',return_value=png()):
+                http=ThreadingHTTPServer(('127.0.0.1',0),server.Handler)
+                worker=threading.Thread(target=http.serve_forever,daemon=True);worker.start()
+                base='http://127.0.0.1:'+str(http.server_port)
+                try:
+                    address=base+'/tmdb/image/t/p/w300/frame.jpg'
+                    with urlopen(address) as response:
+                        self.assertEqual(response.read(),png())
+                        self.assertIn('immutable',response.headers['Cache-Control'])
+                        etag=response.headers['ETag']
+                    with self.assertRaises(HTTPError) as error:urlopen(Request(address,headers={'If-None-Match':etag}))
+                    self.assertEqual(error.exception.code,304)
+                    with self.assertRaises(HTTPError) as error:urlopen(base+'/tmdb/image/https://evil.test/x.jpg')
+                    self.assertEqual(error.exception.code,400)
+                    with patch.object(cache,'download',return_value=b'HTML error'):
+                        with self.assertRaises(HTTPError) as error:urlopen(base+'/tmdb/image/t/p/w300/missing.jpg')
+                        self.assertEqual(error.exception.code,502)
+                finally:
+                    http.shutdown();http.server_close();worker.join()
+
+
 if __name__ == '__main__':
     unittest.main()

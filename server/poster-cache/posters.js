@@ -48,49 +48,91 @@
         return base + '/poster/kp/' + parts[0] + '.jpg?v=3&season=' + (parts[1] || '0');
     }
 
-    function load(id, callback) {
-        var state = loads[id];
-        if (state && state.ok) return callback(url(id));
-        if (state && state.pending) { state.callbacks.push(callback); return; }
-        if (state && state.failedAt && Date.now() - state.failedAt < 60000) return;
-        state = loads[id] = {pending: true, callbacks: [callback]};
-        var image = new Image();
-        state.image = image;
-        image.onload = function () {
-            state.pending = false;
-            state.ok = true;
-            var callbacks = state.callbacks;
-            state.callbacks = [];
-            callbacks.forEach(function (fn) { fn(url(id)); });
-            state.image = null;
-        };
-        image.onerror = function () {
-            state.pending = false;
-            state.failedAt = Date.now();
-            state.callbacks = [];
-            state.image = null;
-        };
-        image.src = url(id);
+    function tmdbUrl(value) {
+        var match = String(value || '').replace(/\/+/g,'/').match(/(?:^|\/)(t\/p\/(?:original|[wh][1-9][0-9]{1,3})\/[A-Za-z0-9_-]{1,200}\.(?:jpg|jpeg|png|webp))(?:[?#].*)?$/);
+        return match ? base + '/tmdb/image/' + match[1] : '';
     }
 
-    function replaceImage(image, id, root) {
-        if (!image || !id) return;
-        var target = url(id);
-        image.setAttribute('data-roman-poster-id', id);
-        load(id, function (local) {
+    function posterPath(data) {
+        var path = data && (data.poster_path || data.img);
+        return /^\/[A-Za-z0-9_-]+\.(jpg|jpeg|png|webp)$/.test(path || '') ? 't/p/w500' + path : path;
+    }
+
+    function load(id, callback, failure, address) {
+        address = address || url(id);
+        var state = loads[address];
+        if (state && state.ok) return callback(address);
+        if (state && state.pending) { state.callbacks.push([callback,failure]); return; }
+        if (state && state.failedAt && Date.now() - state.failedAt < 60000) {
+            if (failure) failure();
+            return;
+        }
+        state = loads[address] = {pending:true,callbacks:[[callback,failure]]};
+        var image = new Image();
+        state.image = image;
+        function finish(ok) {
+            state.pending=false;state.ok=ok;
+            if (!ok) state.failedAt=Date.now();
+            var callbacks=state.callbacks;state.callbacks=[];state.image=null;
+            callbacks.forEach(function (pair) {
+                if (ok) pair[0](address);
+                else if (pair[1]) pair[1]();
+            });
+        }
+        image.onload=function () {finish(true);};
+        image.onerror=function () {finish(false);};
+        image.src=address;
+    }
+
+    function replaceImage(image, id, root, primaryPath) {
+        if (!image) return;
+        var primary=tmdbUrl(primaryPath) || tmdbUrl(image.getAttribute('data-src')) || tmdbUrl(image.getAttribute('src'));
+        if (!primary && !id) return;
+        var identity=primary+'|'+id;
+        image.setAttribute('data-roman-poster-id',identity);
+        function apply(local) {
             if (!document.documentElement.contains(image)) return;
-            if (image.getAttribute('data-roman-poster-id') !== id) return;
-            if (image.getAttribute('src') !== local) {
+            if (image.getAttribute('data-roman-poster-id')!==identity) return;
+            if (image.getAttribute('src')!==local) {
                 image.removeAttribute('srcset');
-                image.src = local;
+                if (image.getAttribute('data-src')) image.setAttribute('data-src',local);
+                image.src=local;
             }
-            // Lampa adds this text overlay after repeated failed image loads.
-            if (root) {
-                Array.prototype.forEach.call(root.querySelectorAll('.card__img-broken'), function (node) {
-                    if (node.parentNode) node.parentNode.removeChild(node);
-                });
+            if (root) Array.prototype.forEach.call(root.querySelectorAll('.card__img-broken'),function (node) {
+                if (node.parentNode) node.parentNode.removeChild(node);
+            });
+        }
+        function fallback() {if (id) load(id,apply);}
+        if (primary) load('',apply,fallback,primary);
+        else fallback();
+    }
+
+    // Preserve the native renderer and route its exact TMDB asset through disk cache.
+    function cacheImage(image) {
+        if (!image || !image.getAttribute) return false;
+        var changed=false;
+        ['src','data-src'].forEach(function (attr) {
+            var old=image.getAttribute(attr), local=tmdbUrl(old);
+            if (local && local!==old) {
+                image.removeAttribute('srcset');
+                image.setAttribute(attr,local);changed=true;
             }
         });
+        return changed;
+    }
+
+    function configureTmdb() {
+        if (!Lampa.TMDB || typeof Lampa.TMDB.image!=='function') return;
+        if (!Lampa.Storage.get('homecinema_tmdb_cache_v1',false)) {
+            Lampa.Storage.set('proxy_tmdb',true);
+            Lampa.Storage.set('proxy_tmdb_auto',true);
+            Lampa.Storage.set('homecinema_tmdb_cache_v1',true);
+        }
+        if (Lampa.TMDB.image.homecinemaCache) return;
+        var previous=Lampa.TMDB.image;
+        var handler=function (path) {return tmdbUrl(path) || previous.apply(this,arguments);};
+        handler.homecinemaCache=true;
+        Lampa.TMDB.image=handler;
     }
 
     function card(element) {
@@ -100,16 +142,19 @@
             data = Object.assign({}, fullCard, {season_number:data.season_number});
         }
         var id = posterKey(data);
-        if (!id) return;
+        var primary=posterPath(data);
+        if (!id && !tmdbUrl(primary)) return;
         var image = element.querySelector('img.card__img');
         // Keep the existing renderer's lazy-loading behavior.
-        if (image && !/img_load\.svg/.test(image.getAttribute('src') || '')) replaceImage(image, id, element);
+        if (image && !/img_load\.svg/.test(image.getAttribute('src') || '')) replaceImage(image, id, element, primary);
     }
 
     function scan(root) {
         if (!root || root.nodeType !== 1) return;
         if (root.classList && root.classList.contains('card')) card(root);
         Array.prototype.forEach.call(root.querySelectorAll('.card'), card);
+        cacheImage(root);
+        Array.prototype.forEach.call(root.querySelectorAll("img"),cacheImage);
         previews(root);
         full();
         torrentRows(root);
@@ -119,10 +164,12 @@
 
     var fullCard = null;
     function full() {
-        var id = posterKey(activeCard());
-        if (!id) return;
+        var data=activeCard();
+        var id = posterKey(data);
+        var primary=posterPath(data);
+        if (!id && !tmdbUrl(primary)) return;
         Array.prototype.forEach.call(document.querySelectorAll(posterSelector), function (image) {
-            replaceImage(image, id);
+            replaceImage(image, id, null, primary);
         });
     }
 
@@ -130,7 +177,7 @@
     function activeCard() {
         var activity=Lampa.Activity && Lampa.Activity.active ? Lampa.Activity.active() : null;
         var data=activity && (activity.card || activity.movie);
-        return kpId(data) ? data : fullCard;
+        return data || fullCard;
     }
     function background(image) {
         if (!image || !image.matches || !image.matches(backgroundSelector)) return;
@@ -164,13 +211,9 @@
                 image.setAttribute('data-src',local);
                 replaceImage(image,key,container);
             });
-        } else if (image.homecinemaPreviewSource!==src) {
-            image.homecinemaPreviewSource=src;
-            setTimeout(function () {
-                if (document.documentElement.contains(image) && image.getAttribute('src')===src && !image.naturalWidth) preview(image,true);
-            },7000);
         }
     }
+
     function previews(root) {
         if (root.matches && root.matches(previewSelector)) preview(root,false);
         Array.prototype.forEach.call(root.querySelectorAll(previewSelector),function (image) {preview(image,false);});
@@ -255,6 +298,9 @@
         if (ready) return;
         if (!window.Lampa || !Lampa.Listener || !document.body) return setTimeout(start, 200);
         ready = true;
+        configureTmdb();
+        // Lampac may load its TMDB plugin after this embedded client.
+        setInterval(configureTmdb,1000);
         Lampa.Listener.follow('full', function (event) {
             if (event.type === 'complite' && event.data && event.data.movie) {
                 fullCard = event.data.movie;
@@ -271,11 +317,15 @@
                 setTimeout(function () {torrentRow(row);previews(row);full();},0);
             }
         });
-        document.addEventListener('error',function (event) {preview(event.target,true);background(event.target);},true);
+        document.addEventListener('error',function (event) {
+            if (!cacheImage(event.target)) preview(event.target,true);
+            background(event.target);
+        },true);
         var observer = new MutationObserver(function (mutations) {
             mutations.forEach(function (mutation) {
                 if (mutation.type === 'attributes') {
                     var image = mutation.target;
+                    cacheImage(image);
                     if (image.classList && image.classList.contains('card__img')) {
                         var parent = image.closest ? image.closest('.card') : image.parentNode.parentNode;
                         card(parent);

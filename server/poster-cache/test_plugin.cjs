@@ -5,6 +5,10 @@ let observer;
 const nodes = [];
 let requests = 0;
 let failed = false;
+let failTmdb = false;
+const addresses=[];
+const intervals=[];
+const settings={};
 let storageListener;
 const watched={};
 let seasonIndex={};
@@ -19,24 +23,24 @@ function makeCard(data, src) {
     nodes.push(image);
     return {card,image};
 }
-const good = makeCard({id:85552,kinopoisk_id:'1178445',name:'Эйфория'}, 'https://image.tmdb.org/x.jpg');
+const good = makeCard({id:85552,kinopoisk_id:'1178445',name:'Эйфория',poster_path:'/native.jpg'}, 'https://image.tmdb.org/x.jpg');
 const unknown = makeCard({id:999,name:'Unknown'}, 'https://image.tmdb.org/unknown.jpg');
 const doc = {body:{nodeType:1,querySelectorAll:()=>[good.card,unknown.card]},
     documentElement:{contains: node=>nodes.includes(node)},querySelectorAll:()=>[],addEventListener:(name,fn)=>{listeners[name]=fn;}};
 const listeners = {};
-const context = {window:{}, document:doc, Date, setTimeout:fn=>timers.push(fn), setInterval:()=>{},
-    Lampa:{Listener:{follow:(key,fn)=>{listeners[key]=fn;}},Storage:{get:()=>watched,listener:{follow:(key,fn)=>storageListener=fn}},Utils:{hash:value=>value}},
-    Image: class {set src(value){requests++; if(failed)this.onerror();else this.onload();}},
+const context = {window:{}, document:doc, Date, setTimeout:fn=>timers.push(fn), setInterval:fn=>intervals.push(fn),
+    Lampa:{TMDB:{image:path=>'native:'+path},Listener:{follow:(key,fn)=>{listeners[key]=fn;}},Storage:{get:key=>key==='online_watched_last'?watched:settings[key],set:(k,v)=>settings[k]=v,listener:{follow:(key,fn)=>storageListener=fn}},Utils:{hash:value=>value}},
+    Image: class {set src(value){requests++;addresses.push(value); if(failed || (failTmdb && value.includes('/tmdb/image/')))this.onerror();else this.onload();}},
     XMLHttpRequest: class {open(){} send(){this.status=200;this.responseText=JSON.stringify({paths:{},ids:{},imdb:{},seasons:seasonIndex});this.onload();}},
     MutationObserver:class {constructor(fn){observer=fn;} observe(){}}};
 context.window.Lampa = context.Lampa;
 vm.runInNewContext(fs.readFileSync('posters.js','utf8').replace('__POSTER_BASE__','http://server:9121'),context);
-assert.equal(good.image.src,'http://server:9121/poster/kp/1178445.jpg?v=3&season=0');
+assert.equal(good.image.src,'http://server:9121/tmdb/image/t/p/w500/native.jpg');
 assert.equal(unknown.image.src,'https://image.tmdb.org/unknown.jpg');
 assert.equal(requests,1);
 good.image.src='https://image.tmdb.org/native-retry.jpg';
 observer([{type:'attributes',target:good.image}]);
-assert.equal(good.image.src,'http://server:9121/poster/kp/1178445.jpg?v=3&season=0');
+assert.equal(good.image.src,'http://server:9121/tmdb/image/t/p/w500/native.jpg');
 assert.equal(requests,1);
 failed=true;
 const unavailable=makeCard({kinopoisk_id:'555'},'original.jpg');
@@ -77,5 +81,37 @@ console.log('Episode previews: season-specific labelled fallback, working frames
 const stalled=previewImage('https://blocked/episode.jpg',2);
 observer([{type:'attributes',target:stalled}]);
 for(const fn of timers.splice(0))fn();
-assert.equal(stalled.src,'http://server:9121/poster/kp/42.jpg?v=3&season=2','stalled image gets a bounded fallback');
+assert.equal(stalled.src,'https://blocked/episode.jpg','pending images are not replaced before a real error');
+listeners.error({target:stalled});
+assert.equal(stalled.src,'http://server:9121/poster/kp/42.jpg?v=3&season=2');
 assert.equal(working.src,'https://reachable/real-frame.jpg','delayed check retains an already loaded frame');
+
+assert.equal(context.Lampa.TMDB.image('t/p/w300/hash.jpg'),'http://server:9121/tmdb/image/t/p/w300/hash.jpg');
+assert.equal(settings.proxy_tmdb,true);
+assert.equal(settings.proxy_tmdb_auto,true);
+assert.equal(context.Lampa.TMDB.image('invalid'),'native:invalid');
+context.Lampa.TMDB.image=path=>'late:'+path;
+intervals[0]();
+assert.equal(context.Lampa.TMDB.image('t/p/w300/new.jpg'),'http://server:9121/tmdb/image/t/p/w300/new.jpg','late Lampac plugin is wrapped');
+const noKp=makeCard({id:100,poster_path:'/without-kp.jpg'},'old.jpg');
+observer([{type:'childList',addedNodes:[noKp.card]}]);
+assert.equal(noKp.image.src,'http://server:9121/tmdb/image/t/p/w500/without-kp.jpg','TMDB cache does not require a KP ID');
+failTmdb=true;
+const fallback=makeCard({kinopoisk_id:'99',poster_path:'/missing.jpg'},'old.jpg');
+const before=addresses.length;
+observer([{type:'childList',addedNodes:[fallback.card]}]);
+assert.equal(fallback.image.src,'http://server:9121/poster/kp/99.jpg?v=3&season=0');
+assert.deepEqual(addresses.slice(before),['http://server:9121/tmdb/image/t/p/w500/missing.jpg','http://server:9121/poster/kp/99.jpg?v=3&season=0'],'fallback only after TMDB failure');
+failTmdb=false;
+const nativeFrame=previewImage('http://lampac/tmdb/img/t/p/w300/frame.jpg?uid=private',2);
+nativeFrame.setAttribute('data-src',nativeFrame.src);
+observer([{type:'attributes',target:nativeFrame}]);
+assert.equal(nativeFrame.src,'http://server:9121/tmdb/image/t/p/w300/frame.jpg');
+assert.equal(nativeFrame.getAttribute('data-src'),nativeFrame.src,'lazy renderer keeps the cached frame');
+console.log('TMDB first: proxy defaults, late plugin, posters without KP, exact frames and ordered fallback passed.');
+
+const fromSrc=makeCard({kinopoisk_id:'123'},'https://image.tmdb.org/t/p/w300/from-src.jpg');
+observer([{type:'childList',addedNodes:[fromSrc.card]}]);
+assert.equal(fromSrc.image.src,'http://server:9121/tmdb/image/t/p/w300/from-src.jpg','available native TMDB image wins even without poster_path');
+
+assert.equal(context.Lampa.TMDB.image('t/p/w300//hash.jpg'),'http://server:9121/tmdb/image/t/p/w300/hash.jpg','double path separators from catalog are normalized');
