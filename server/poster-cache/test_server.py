@@ -111,6 +111,10 @@ class TestPosters(unittest.TestCase):
                 worker.start()
                 try:
                     base = 'http://127.0.0.1:' + str(http.server_port)
+                    with patch.object(server, 'series_metadata', return_value={'kp_id':'1178445','episodes':[]}):
+                        with urlopen(base + '/series/kp/1178445.json') as response:
+                            self.assertEqual(response.headers['Content-Type'], 'application/json')
+                            self.assertEqual(json.load(response)['episodes'],[])
                     with urlopen(base + '/poster/kp/1178445.jpg') as response:
                         self.assertEqual(response.headers['Content-Type'], 'image/png')
                         self.assertEqual(response.read(), png())
@@ -145,6 +149,34 @@ class TestPosters(unittest.TestCase):
             self.assertNotIn('movie:85552', index['ids'])
             self.assertEqual(index['paths']['a.jpg'], '1178445')
             self.assertNotIn('shared.jpg', index['paths'])
+
+
+class TestSeriesMetadata(unittest.TestCase):
+    def test_dates_are_read_only_public_and_filtered(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root)
+            with sqlite3.connect(path / 'recommender.sqlite3') as conn:
+                conn.execute('CREATE TABLE episode_schedules(kp_id,episodes_json,checked_at)')
+                conn.execute('INSERT INTO episode_schedules VALUES(?,?,?)', (42,json.dumps([
+                    {'season':2,'episode':3,'date':'2022-01-23','private':'secret'},
+                    {'season':2,'episode':4,'date':'2022-02-30'},
+                    {'season':2,'episode':5,'date':None},
+                    {'season':'2','episode':6,'date':'2022-02-06'},
+                ]),123))
+            before = (path / 'recommender.sqlite3').read_bytes()
+            with patch.object(server,'CATALOG',path):
+                self.assertEqual(server.series_metadata('42'), {'kp_id':'42','episodes':[
+                    {'season':2,'episode':3,'date':'2022-01-23'}],'checked_at':123})
+                self.assertEqual(server.series_metadata('43')['episodes'],[])
+                with self.assertRaises(ValueError): server.series_metadata('../42')
+            self.assertEqual((path / 'recommender.sqlite3').read_bytes(),before)
+
+    def test_missing_catalog_or_schedule_is_empty(self):
+        with tempfile.TemporaryDirectory() as root:
+            with patch.object(server,'CATALOG',Path(root)):
+                self.assertEqual(server.series_metadata('42')['episodes'],[])
+                with sqlite3.connect(Path(root) / 'recommender.sqlite3'):
+                    self.assertEqual(server.series_metadata('42')['episodes'],[])
 
 
 class subprocess_result:

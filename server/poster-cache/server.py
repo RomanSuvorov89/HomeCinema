@@ -147,6 +147,37 @@ class Posters:
                 raise
 
 
+def series_metadata(kp_id):
+    """Public episode dates from the existing catalog, with no network or personal data."""
+    kp_id = valid_id(kp_id)
+    if not kp_id:
+        raise ValueError('Invalid Kinopoisk ID')
+    path = CATALOG / 'recommender.sqlite3'
+    result = {'kp_id': kp_id, 'episodes': [], 'checked_at': 0}
+    if not path.is_file():
+        return result
+    with sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=2) as conn:
+        if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='episode_schedules'").fetchone():
+            return result
+        row = conn.execute('SELECT episodes_json,checked_at FROM episode_schedules WHERE kp_id=?', (int(kp_id),)).fetchone()
+    if not row:
+        return result
+    result['checked_at'] = int(row[1])
+    for item in json.loads(row[0]):
+        if not isinstance(item, dict):
+            continue
+        season, episode, day = item.get('season'), item.get('episode'), item.get('date')
+        if type(season) is not int or type(episode) is not int or not 0 <= season <= 999 or not 1 <= episode <= 9999:
+            continue
+        try:
+            if date.fromisoformat(day).isoformat() != day:
+                continue
+        except (ValueError, TypeError):
+            continue
+        result['episodes'].append({'season': season, 'episode': episode, 'date': day})
+    return result
+
+
 class Catalog:
     def __init__(self):
         self.lock = threading.Lock()
@@ -278,11 +309,18 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = urlsplit(self.path).path
         if path == '/health':
-            payload = {'ok': True, 'version': '0.2.0', 'saved': len(list(POSTERS.root.glob('*.img'))),
+            payload = {'ok': True, 'version': '0.2.1', 'saved': len(list(POSTERS.root.glob('*.img'))),
                        'catalog_errors': CATALOG_INDEX.snapshot()['errors']}
             self.send(200, json.dumps(payload).encode(), 'application/json')
         elif path == '/index.json':
             self.send(200, json.dumps(CATALOG_INDEX.snapshot()).encode(), 'application/json')
+        elif re.fullmatch(r'/series/kp/[1-9][0-9]{0,9}\.json', path):
+            try:
+                payload = series_metadata(path.rsplit('/', 1)[1][:-5])
+                self.send(200, json.dumps(payload).encode(), 'application/json')
+            except Exception as error:
+                print('series metadata error:', str(error)[-200:], flush=True)
+                self.send(503, b'{"error":"Episode dates temporarily unavailable"}', 'application/json')
         elif re.fullmatch(r'/poster/kp/[1-9][0-9]{0,9}\.jpg', path):
             try:
                 query = parse_qs(urlsplit(self.path).query)
