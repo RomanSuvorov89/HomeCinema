@@ -1982,6 +1982,17 @@ class Handler(BaseHTTPRequestHandler):
             return
         parsed_url = urlparse(self.path)
         path = parsed_url.path
+        if re.fullmatch(r'/facts/kp/[1-9][0-9]{0,9}\.json', path):
+            from facts import get_facts
+            try:
+                kp_id=path.rsplit('/',1)[1][:-5]
+                media_type=parse_qs(parsed_url.query).get('type',['movie'])[0]
+                self.review_response(200,get_facts(DATA_FILE.parent/'facts',kp_id,media_type))
+            except ValueError as error:
+                self.review_response(400,{'error':str(error),'items':[]})
+            except Exception:
+                self.review_response(503,{'error':'Факты временно недоступны','items':[]})
+            return
         if path == '/notifications.json':
             connection = direct_connection()
             try:

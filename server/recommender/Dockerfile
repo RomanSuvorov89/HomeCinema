@@ -7,6 +7,7 @@ COPY kinoafisha.py /app/kinoafisha.py
 COPY home_cache.py /app/home_cache.py
 COPY candidate_engine.py /app/candidate_engine.py
 COPY review_api.py /app/review_api.py
+COPY facts.py /app/facts.py
 COPY track_preferences.py /app/track_preferences.py
 COPY track-memory.js /app/track-memory.js
 COPY platform_corrections.json /app/platform_corrections.json

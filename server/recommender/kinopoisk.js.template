@@ -974,7 +974,18 @@
       '.card__icon.icon--history{display:none!important}' +
       '.full-start-new__right{min-width:0}' +
       '.full-start-new__buttons,.full-start__buttons{flex-wrap:wrap;max-width:100%;row-gap:.65em}' +
-      '.button--roman-kp-rating{color:#d3bfff}' +
+      '.full-start__rate.button--roman-kp-rating{color:#d3bfff;display:inline-flex!important;align-items:center;flex:0 0 auto;min-height:1.5em;height:auto!important;width:auto!important;max-width:none;box-sizing:border-box;padding:0 .5em!important;line-height:1.5;white-space:nowrap}' +
+      '.button--roman-kp-rating>span{display:block;font-size:inherit;line-height:inherit;max-width:none;white-space:nowrap}' +
+      '.full-start-new__rate-line,.full-start__rate-line{flex-wrap:wrap;row-gap:.65em}' +
+      '.homecinema-facts{height:100%;box-sizing:border-box;padding:1.5em}' +
+      '.homecinema-facts>.scroll{height:100%}' +
+      '.homecinema-facts__body{max-width:70em;margin:0 auto;padding-bottom:2em}' +
+      '.homecinema-facts h2{font-size:1.7em;line-height:1.3;margin:0 0 1em}' +
+      '.homecinema-fact{padding:1em;border-radius:.65em;margin-bottom:.65em;background:rgba(255,255,255,.055)}' +
+      '.homecinema-fact p,.homecinema-facts__body>p{line-height:1.6;white-space:pre-wrap;overflow-wrap:anywhere}' +
+      '.homecinema-fact.focus{outline:2px solid currentColor}' +
+      '.homecinema-fact__spoiler{opacity:.75}' +
+      '.homecinema-facts__source{display:inline-block;margin-top:1em}' +
       '.roman-card-ratings{position:absolute;right:.42em;top:.42em;z-index:5;' +
       'display:flex;flex-direction:column;align-items:stretch;gap:.18em;pointer-events:none}' +
       '.roman-card-rating{min-width:3.7em;padding:.22em .38em;border-radius:.25em;' +
@@ -1181,8 +1192,112 @@
     observer.observe(document.body, { childList: true, subtree: true });
   }
 
+  function homeBack() {
+    var top=Lampa.Controller.windowTop && Lampa.Controller.windowTop();
+    var overlay=top || document.querySelector('.modal,.player,.search-box,.search') ||
+      document.body.classList.contains('settings--open') || document.body.classList.contains('selectbox--open');
+    if (overlay) {
+      if (top && top.name) Lampa.Controller.toggle(top.name);
+      var current=Lampa.Controller.enabled();
+      if (current && current.controller && current.controller.back) Lampa.Controller.back();
+      else if (document.body.classList.contains('selectbox--open') && Lampa.Select) Lampa.Select.close();
+      else if (document.querySelector('.modal') && Lampa.Modal) Lampa.Modal.close();
+      else Lampa.Controller.back();
+    } else Lampa.Activity.backward();
+  }
+
+  function installHomeUiPolish() {
+    if (window.HomeCinemaUiV1) return;
+    window.HomeCinemaUiV1=true;
+    document.addEventListener('click',function (event) {
+      var button=event.target && event.target.closest && event.target.closest('.head__backward');
+      if (!button || (typeof event.button==='number' && event.button!==0)) return;
+      event.preventDefault();event.stopImmediatePropagation();
+      homeBack();
+    },true);
+    // Native facts call CUB AI. Published KP facts need no CUB account.
+    Lampa.Component.add('ai_facts',factsComponent);
+    Lampa.Component.add('facts',factsComponent);
+  }
+
+  function factsComponent(object) {
+    var Base=Lampa.Component.get && Lampa.Component.get('nocomponent');
+    var comp=Base ? new Base(object) : new Lampa.InteractionCategory(object);
+    var scroll, body, root, xhr, gone=false, selected=0;
+    var movie=object.card || object.movie || {};
+    var personal=reviewForCard(movie) || {};
+    var kp=String(movie.kinopoisk_id || movie.kp_id || personal.kp_id || '');
+    var type=movie.name || movie.first_air_date || movie.media_type==='tv' ? 'tv' : 'movie';
+    function sourceButton(source) {
+      if (!/^https:\/\/www\.kinopoisk\.ru\/(?:series|film)\/[1-9][0-9]*\/didyouknow\/$/.test(source || '')) return;
+      var button=$('<div class="simple-button selector homecinema-facts__source">Источник: Кинопоиск ↗</div>');
+      button.on('hover:enter',function () {window.open(source,'_blank','noopener');});body.append(button);
+    }
+    function focus(index) {
+      var nodes=body.find('.selector');
+      selected=Math.max(0,Math.min(index,nodes.length-1));
+      if (nodes.length) {Lampa.Controller.collectionFocus(nodes.eq(selected));scroll.update(nodes.eq(selected));}
+    }
+    function draw(data) {
+      if (gone) return;
+      body.empty();
+      $('<h2></h2>').text('Интересные факты — '+(movie.name || movie.title || '')).appendTo(body);
+      var items=data.items || [];
+      if (!items.length) {
+        $('<p></p>').text(data.error || 'На странице Кинопоиска пока не удалось найти опубликованные факты.').appendTo(body);
+        if (movie.overview) {
+          $('<h3></h3>').text('О фильме или сериале').appendTo(body);
+          $('<p></p>').text(movie.overview).appendTo(body);
+        }
+      }
+      items.forEach(function (item) {
+        var article=$('<div class="selector homecinema-fact"></div>');
+        if (item.spoiler) {
+          var button=$('<div class="homecinema-fact__spoiler">Спойлер — нажмите, чтобы показать</div>');
+          var text=$('<p></p>').text(item.text).hide();article.append(button).append(text);
+          article.on('hover:enter',function () {text.toggle();button.toggle();});
+        } else $('<p></p>').text(item.text).appendTo(article);
+        article.on('hover:focus',function () {selected=body.find('.selector').index(this);});
+        body.append(article);
+      });
+      sourceButton(data.source_url);
+      if (Lampa.Activity.active() && Lampa.Activity.active().activity===comp.activity) comp.start();
+    }
+    comp.create=function () {
+      root=$('<div class="homecinema-facts"></div>');
+      body=$('<div class="homecinema-facts__body"><p>Загружаем факты Кинопоиска…</p></div>');
+      scroll=new Lampa.Scroll({mask:true,over:true});scroll.append(body);root.append(scroll.render());
+      if (this.emit) this.emit('create');
+      this.activity.loader(false);this.activity.toggle();
+      if (!/^[1-9][0-9]{0,9}$/.test(kp)) {
+        draw({items:[],error:'Для этой карточки пока не определён ID Кинопоиска.'});return;
+      }
+      xhr=new XMLHttpRequest();xhr.open('GET',reviewBase+'/facts/kp/'+kp+'.json?type='+type,true);xhr.timeout=22000;
+      xhr.onload=function () {
+        try {if(xhr.status!==200) throw new Error('HTTP');draw(JSON.parse(xhr.responseText));}
+        catch (_) {draw({error:'Факты временно недоступны. Попробуйте открыть раздел ещё раз.'});}
+      };
+      xhr.onerror=xhr.ontimeout=function () {draw({error:'Не удалось загрузить факты. Проверьте соединение с сервером.'});};xhr.send();
+    };
+    comp.start=function () {
+      Lampa.Controller.add('content',{
+        toggle:function () {Lampa.Controller.collectionSet(root);focus(selected);},
+        up:function () {if(selected===0)Lampa.Controller.toggle('head');else focus(selected-1);},
+        down:function () {focus(selected+1);},
+        enter:function () {body.find('.selector').eq(selected).trigger('hover:enter');},
+        back:function () {Lampa.Activity.backward();}
+      });
+      Lampa.Controller.toggle('content');
+    };
+    comp.render=function () {return root;};
+    comp.pause=function () {};comp.stop=function () {};
+    comp.destroy=function () {gone=true;if(xhr)xhr.abort();if(scroll)scroll.destroy();if(root)root.remove();if(comp.emit)comp.emit('destroy');};
+    return comp;
+  }
+
   function start() {
     if (window.romanKinopoiskStarted) return;
+    installHomeUiPolish();
     installTailLoading();
     Lampa.Component.add(COMPONENT, component);
     Lampa.Component.add(REVIEW_COMPONENT, reviewComponent);
