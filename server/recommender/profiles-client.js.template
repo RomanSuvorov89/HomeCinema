@@ -224,7 +224,7 @@
         if (errorText) notify('Не удалось сохранить профиль: '+errorText);
         var readIds=read('homecinema_notice_read',[]), items=notices.map(function (n) {
             return {title:n.title+' · '+n.season+'×'+String(n.episode).replace(/^(\d)$/,'0$1'),
-                subtitle:n.date+' · '+n.text+(readIds.indexOf(n.id)>=0 ? ' · Прочитано' : ''),notice:n};
+                subtitle:n.date+(readIds.indexOf(n.id)>=0 ? ' · Прочитано' : ''),notice:n};
         });
         if (!items.length) items.push({title:'Новых уведомлений нет',subtitle:'Здесь появятся новые серии оценённых сериалов по расписанию.'});
         items.unshift({title:'Отметить всё прочитанным',action:'read'});
@@ -244,32 +244,52 @@
         if (!window.Lampa) return;
         var ids=read('homecinema_notice_read',[]), count=notices.filter(function (n) {return ids.indexOf(n.id)<0;}).length;
         var bell=document.querySelector('.head .notice--icon, .head .open--notice');
-        if (bell) {bell.setAttribute('data-homecinema-count',count ? String(count) : errorText ? '!' : '0');bell.classList.toggle('homecinema-unread',count>0 || !!errorText);}
+        if (bell) {
+            var badge=bell.querySelector('.homecinema-bell-count');
+            if (!badge) {
+                badge=document.createElement('span');badge.className='homecinema-bell-count';
+                badge.setAttribute('aria-hidden','true');bell.appendChild(badge);
+            }
+            badge.textContent=count ? String(count) : errorText ? '!' : '';
+            bell.setAttribute('title',count ? 'Новых уведомлений: '+count : 'Уведомления');
+            bell.classList.toggle('homecinema-unread',count>0 || !!errorText);
+        }
     }
     function pollNotices() {
         if (!active) return;
         request('/p/'+encodeURIComponent(active.id)+'/notifications.json').then(function (data) {notices=data.items || [];refreshBadge();}).catch(function () {});
     }
+    function ownButtons(selector,action,className) {
+        $(selector).each(function () {
+            if (this.homecinemaBound) return;
+            // A different jQuery instance may own native handlers: .off() cannot remove them.
+            // cloneNode drops both those handlers and addEventListener registrations.
+            var node=this.cloneNode(true);
+            this.parentNode.replaceChild(node,this);
+            node.homecinemaBound=true;
+            if (className) node.classList.add(className);
+            var last=0;
+            function enter(event) {
+                if (event) {event.preventDefault();event.stopImmediatePropagation();}
+                var now=Date.now();
+                if (now-last<250) return;
+                last=now;action();
+            }
+            $(node).on('hover:enter',enter);
+            // Mouse clicks are handled here, before delegated native selector handlers.
+            node.addEventListener('click',enter,true);
+        });
+    }
     function bindButtons() {
         if (disabled || !window.Lampa || !Lampa.Select || typeof $ !== 'function') return;
-        $('.head .open--profile').each(function () {
-            var node=this;
-            if (node.homecinemaBound) return;
-            node.homecinemaBound=true;
-            $(node).off('hover:enter').on('hover:enter',menu);
-        });
+        ownButtons('.head .open--profile',menu);
         var profile=document.querySelector('.head .open--profile');
         if (profile && active) {
             profile.setAttribute('title',active.name);
             profile.setAttribute('data-homecinema-profile',active.name.slice(0,1).toUpperCase());
             profile.classList.add('homecinema-profile');
         }
-        $('.head .notice--icon, .head .open--notice').each(function () {
-            if (this.homecinemaBound) return;
-            this.homecinemaBound=true;
-            this.classList.add('homecinema-bell');
-            $(this).off('hover:enter').on('hover:enter',showNotices);
-        });
+        ownButtons('.head .notice--icon, .head .open--notice',showNotices,'homecinema-bell');
         if (Lampa.Notice && !Lampa.Notice.homecinemaManaged) {
             clearInterval(Lampa.Notice.blick_timer);
             Lampa.Notice.drawCount=refreshBadge;
@@ -326,7 +346,7 @@
             if (!document.hidden && active && !busy) sync(false).catch(function () {});
         });
         var style=document.createElement('style');
-        style.textContent='.homecinema-profile{position:relative}.homecinema-profile.focus:after,.homecinema-profile.hover:after{background:#f5f5f7;color:#111319}.homecinema-profile:after{content:attr(data-homecinema-profile);position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:#242733;border-radius:50%;font-size:.8em;font-weight:600}.head .homecinema-bell:not(.homecinema-unread):after{display:none!important}.head .homecinema-bell.homecinema-unread:after{content:attr(data-homecinema-count);position:absolute;right:0;top:0;background:#e85959;color:white;border-radius:1em;font-size:.5em;padding:.15em .35em}';
+        style.textContent='.homecinema-profile{position:relative}.homecinema-profile.focus:after,.homecinema-profile.hover:after{background:#f5f5f7;color:#111319}.homecinema-profile:after{content:attr(data-homecinema-profile);position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:#242733;border-radius:50%;font-size:.8em;font-weight:600}.head .homecinema-bell{position:relative;overflow:visible}.head .homecinema-bell:after{display:none!important}.head .homecinema-bell .homecinema-bell-count{position:absolute;right:-.3em;top:-.3em;min-width:1.5em;height:1.5em;line-height:1.5em;text-align:center;padding:0 .25em;box-sizing:border-box;background:#e85959;color:#fff;border-radius:1em;font-size:.5em;font-weight:600;pointer-events:none;transform:none!important;animation:none!important;transition:none!important}.head .homecinema-bell:not(.homecinema-unread) .homecinema-bell-count{display:none}';
         document.head.appendChild(style);
     }
     window.HomeCinemaProfiles={whenReady:function (fn) {if(ready) fn();else callbacks.push(fn);},

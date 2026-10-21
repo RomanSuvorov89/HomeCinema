@@ -12,10 +12,16 @@ function page(){
  const reserve={file_view:{legacy:{updated:10,percent:100}}};
  const Storage={get:(key,fallback)=>{let raw=localStorage.getItem(key);if(raw===null && key in reserve)return reserve[key];if(!raw)return fallback===undefined?'':fallback;try{return JSON.parse(raw);}catch{return raw;}},
   set:(key,value)=>localStorage.setItem(key,typeof value==='object'?JSON.stringify(value):String(value)),listener:{follow:(name,fn)=>events.storage=fn}};
- const node=()=>({attrs:{},handlers:{},setAttribute(k,v){this.attrs[k]=v;},classList:{add(){},toggle(){}}});nodes.profile=node();nodes.bell=node();
+ const node=()=>({attrs:{},handlers:{},nativeHandlers:1,children:[],setAttribute(k,v){this.attrs[k]=v;},
+  querySelector(){return this.children.find(n=>n.className==='homecinema-bell-count');},appendChild(n){this.children.push(n);},
+  addEventListener(name,fn,capture){assert.equal(capture,true);this.handlers[name]=fn;},
+  cloneNode(){const copy=node();copy.nativeHandlers=0;return copy;},classList:{add(){},toggle(){}}});
+ nodes.profile=node();nodes.bell=node();
+ for(const key of ['profile','bell'])nodes[key].parentNode={replaceChild(copy,old){assert.equal(old,nodes[key]);copy.parentNode=this;nodes[key]=copy;}};
+ const styles=[];
  const context={window:null,localStorage:ls,JSON,Promise,Math,Date,console,
   setTimeout:fn=>{throw Error('Unexpected wait');},setInterval:fn=>intervals.push(fn),
-  document:{body:{},head:{appendChild(){}},hidden:false,createElement:()=>({}),querySelector:s=>s.includes('profile')?nodes.profile:nodes.bell,
+  document:{body:{},head:{appendChild(n){styles.push(n.textContent);}},hidden:false,createElement:node,querySelector:s=>s.includes('profile')?nodes.profile:nodes.bell,
    addEventListener:(name,fn,capture)=>{events[name]=fn;if(name==='lwsEvent')assert.equal(capture,true);}},
   $:arg=>typeof arg==='string' ? {each(fn){fn.call(arg.includes('profile')?nodes.profile:nodes.bell);}} : {off(){return this;},on(name,fn){arg.handlers[name]=fn;return this;}},
   Lampa:{Storage,Noty:{show(){}},Controller:{toggle(){}},Select:{show:menu=>context.menu=menu},Player:{opened:()=>false},Favorite:{read(){}},Input:{edit:(options,done)=>context.inputDone=done}},
@@ -74,12 +80,18 @@ const tick=()=>new Promise(r=>setImmediate(r));
  assert.equal(third.Storage.get('lampac_profile_id',''),'');
  assert.equal(third.Storage.get('favorite',{}).history[0],42,'owner history restored');
  assert.equal(third.Storage.get('homecinema_appearance'),'apple','owner theme restored');
+ assert.equal(third.nodes.profile.nativeHandlers,0,'native CUB handlers removed independently of jQuery instance');
+ third.nodes.profile.handlers['click']({preventDefault(){},stopImmediatePropagation(){}});
+ const opened=third.context.menu;
  third.nodes.profile.handlers['hover:enter']();
+ assert.equal(third.context.menu,opened,'click followed by synthesized enter opens only one menu');
  assert.equal(third.context.menu.title,'Кто смотрит?');
  third.context.menu.onSelect(third.context.menu.items.find(i=>i.action==='rename'));
  third.context.inputDone('New name');await tick();
  assert.equal(third.nodes.profile.attrs.title,'New name');
  assert.equal(third.Storage.get('lampac_profile_id',''),'','renaming keeps the original sync namespace');
  third.nodes.bell.handlers['hover:enter']();assert.equal(third.context.menu.title,'Уведомления');
+ assert.equal(third.nodes.bell.children.length,1,'badge belongs to the bell, polling does not duplicate it');
+ assert.equal(third.nodes.bell.children[0].attrs['aria-hidden'],'true');
  console.log('Profiles client: initial migration, IndexedDB reads, isolation, reload boundary, device secrets, caches, websocket scope, remote settings and failed-switch recovery passed');
 })().catch(error=>{console.error(error);process.exit(1);});

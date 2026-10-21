@@ -8,6 +8,7 @@ let failed = false;
 let storageListener;
 const watched={};
 let seasonIndex={};
+const timers=[];
 function makeCard(data, src) {
     const attrs = {src};
     const image = {classList: {contains: s => s === 'card__img'},
@@ -21,9 +22,9 @@ function makeCard(data, src) {
 const good = makeCard({id:85552,kinopoisk_id:'1178445',name:'Эйфория'}, 'https://image.tmdb.org/x.jpg');
 const unknown = makeCard({id:999,name:'Unknown'}, 'https://image.tmdb.org/unknown.jpg');
 const doc = {body:{nodeType:1,querySelectorAll:()=>[good.card,unknown.card]},
-    documentElement:{contains: node=>nodes.includes(node)},querySelectorAll:()=>[]};
+    documentElement:{contains: node=>nodes.includes(node)},querySelectorAll:()=>[],addEventListener:(name,fn)=>{listeners[name]=fn;}};
 const listeners = {};
-const context = {window:{}, document:doc, Date, setTimeout:()=>{}, setInterval:()=>{},
+const context = {window:{}, document:doc, Date, setTimeout:fn=>timers.push(fn), setInterval:()=>{},
     Lampa:{Listener:{follow:(key,fn)=>{listeners[key]=fn;}},Storage:{get:()=>watched,listener:{follow:(key,fn)=>storageListener=fn}},Utils:{hash:value=>value}},
     Image: class {set src(value){requests++; if(failed)this.onerror();else this.onload();}},
     XMLHttpRequest: class {open(){} send(){this.status=200;this.responseText=JSON.stringify({paths:{},ids:{},imdb:{},seasons:seasonIndex});this.onload();}},
@@ -52,3 +53,29 @@ watched.Euphoria.season=3;
 observer([{type:'attributes',target:seasonal.image}]);
 assert.equal(seasonal.image.src,'http://server:9121/poster/kp/42.jpg?v=3&season=3');
 console.log('Seasonal posters: watched season changes URL and does not reuse another season.');
+
+listeners.full({type:'complite',data:{movie:{kinopoisk_id:'42',name:'Эйфория',original_name:'Euphoria'}}});
+function previewImage(src,season) {
+ const attrs={src};
+ const node={naturalWidth:0,matches:s=>s.includes('season-episode'),
+  getAttribute:k=>attrs[k],setAttribute:(k,v)=>attrs[k]=v,removeAttribute:k=>delete attrs[k],
+  get src(){return attrs.src;},set src(v){attrs.src=v;},
+  closest:()=>({textContent:'Сезон - '+season,querySelectorAll:()=>[]})};
+ nodes.push(node);return node;
+}
+const episode=previewImage('./img/img_broken.svg',2);
+listeners.error({target:episode});
+assert.equal(episode.src,'http://server:9121/poster/kp/42.jpg?v=3&season=2','torrent episode uses its own season');
+assert.equal(episode.getAttribute('data-homecinema-preview'),'season-poster','fallback is identified, not a claimed episode frame');
+const working=previewImage('https://reachable/real-frame.jpg',2);working.naturalWidth=640;
+observer([{type:'attributes',target:working}]);
+assert.equal(working.src,'https://reachable/real-frame.jpg','working episode frames stay unchanged');
+const unrelated=previewImage('https://example.test/missing.jpg',1);unrelated.matches=()=>false;
+listeners.error({target:unrelated});assert.equal(unrelated.src,'https://example.test/missing.jpg');
+console.log('Episode previews: season-specific labelled fallback, working frames and unrelated images preserved.');
+
+const stalled=previewImage('https://blocked/episode.jpg',2);
+observer([{type:'attributes',target:stalled}]);
+for(const fn of timers.splice(0))fn();
+assert.equal(stalled.src,'http://server:9121/poster/kp/42.jpg?v=3&season=2','stalled image gets a bounded fallback');
+assert.equal(working.src,'https://reachable/real-frame.jpg','delayed check retains an already loaded frame');

@@ -215,7 +215,7 @@ def notices(c, profile, cache=None):
             mapped = cache.mapped({'kp_id': kp, 'media_type': 'tv'})[1] if cache else None
             result.append({'id': '%s:%s:%s:%s' % (kp, episode['season'], episode['episode'], episode['date']),
                 'kp_id': kp, 'title': title, 'season': episode['season'], 'episode': episode['episode'],
-                'date': episode['date'], 'card': mapped, 'text': 'Новая серия по расписанию. Наличие перевода и раздачи не проверено.'})
+                'date': episode['date'], 'card': mapped, 'text': 'Новая серия по расписанию.'})
         except (TypeError, ValueError, KeyError):
             continue
     return {'items': sorted(result, key=lambda e: e['date'], reverse=True)[:50]}

@@ -91,7 +91,11 @@
 
     function card(element) {
         if (!element || !element.card_data) return;
-        var id = posterKey(element.card_data);
+        var data = element.card_data;
+        if (data.season_number && !kpId(data) && fullCard) {
+            data = Object.assign({}, fullCard, {season_number:data.season_number});
+        }
+        var id = posterKey(data);
         if (!id) return;
         var image = element.querySelector('img.card__img');
         // Keep the existing renderer's lazy-loading behavior.
@@ -102,6 +106,7 @@
         if (!root || root.nodeType !== 1) return;
         if (root.classList && root.classList.contains('card')) card(root);
         Array.prototype.forEach.call(root.querySelectorAll('.card'), card);
+        previews(root);
     }
 
     var fullCard = null;
@@ -111,6 +116,37 @@
         Array.prototype.forEach.call(document.querySelectorAll('img.full--poster, .full-start__poster img'), function (image) {
             replaceImage(image, id);
         });
+    }
+
+    var previewSelector='.full-episode__img img, .season-episode__img img, .season-info__poster img';
+    function preview(image, failed) {
+        if (!image || !image.matches || !image.matches(previewSelector)) return;
+        var data=fullCard;
+        if (Lampa.Activity && Lampa.Activity.active) {
+            var activity=Lampa.Activity.active();
+            if (activity && kpId(activity.card || activity.movie)) data=activity.card || activity.movie;
+        }
+        if (!data || !kpId(data)) return;
+        var container=image.closest('.season-episode, .full-episode, .season-info');
+        var season=container && (container.textContent || '').match(/(?:сезон|season)\s*[-:]?\s*(\d+)/i);
+        var key=posterKey(season ? Object.assign({},data,{season_number:Number(season[1])}) : data);
+        var src=image.getAttribute('src') || '';
+        if (src.indexOf(base+'/poster/')===0) return;
+        if (failed || !src || /img_(?:broken|load)\.svg/.test(src)) {
+            // This is a labelled fallback, never presented as a frame of this episode.
+            image.setAttribute('data-homecinema-preview','season-poster');
+            image.setAttribute('title','Постер сезона — кадр серии недоступен');
+            replaceImage(image,key,container);
+        } else if (image.homecinemaPreviewSource!==src) {
+            image.homecinemaPreviewSource=src;
+            setTimeout(function () {
+                if (document.documentElement.contains(image) && image.getAttribute('src')===src && !image.naturalWidth) preview(image,true);
+            },7000);
+        }
+    }
+    function previews(root) {
+        if (root.matches && root.matches(previewSelector)) preview(root,false);
+        Array.prototype.forEach.call(root.querySelectorAll(previewSelector),function (image) {preview(image,false);});
     }
 
     function refresh() {
@@ -146,8 +182,10 @@
             if (event.type === 'complite' && event.data && event.data.movie) {
                 fullCard = event.data.movie;
                 full();
+                previews(document.body);
             }
         });
+        document.addEventListener('error',function (event) {preview(event.target,true);},true);
         var observer = new MutationObserver(function (mutations) {
             mutations.forEach(function (mutation) {
                 if (mutation.type === 'attributes') {
@@ -156,6 +194,7 @@
                         var parent = image.closest ? image.closest('.card') : image.parentNode.parentNode;
                         card(parent);
                     } else if (image.classList && image.classList.contains('full--poster')) full();
+                    preview(image,false);
                 } else {
                     Array.prototype.forEach.call(mutation.addedNodes || [], function (node) {
                         scan(node);
