@@ -323,5 +323,90 @@ class TestTmdbCache(unittest.TestCase):
                     http.shutdown();http.server_close();worker.join()
 
 
+class TestTmdbSeasons(unittest.TestCase):
+    key='a'*32
+    payload={'id':123,'season_number':2,'episodes':[
+        {'season_number':2,'episode_number':1,'name':'Episode','still_path':'/frame.jpg','air_date':'2022-01-01'}]}
+
+    def fake_download(self,args,**kwargs):
+        Path(args[args.index('--output')+1]).write_text(json.dumps(self.payload))
+        return subprocess_result()
+
+    def test_doh_metadata_is_persisted_without_key_and_survives_restart(self):
+        from urllib.parse import urlsplit,parse_qs
+        with tempfile.TemporaryDirectory() as root:
+            cache=server.TmdbSeasons(root)
+            with patch.object(server.subprocess,'run',side_effect=self.fake_download) as run:
+                self.assertEqual(cache.get_season('85552',2,self.key,'ru-RU'),self.payload)
+                args=run.call_args.args[0]
+                self.assertEqual(args[args.index('--doh-url')+1],'https://cloudflare-dns.com/dns-query')
+                self.assertEqual(urlsplit(args[-1]).netloc,'api.themoviedb.org')
+                self.assertEqual(parse_qs(urlsplit(args[-1]).query),{'api_key':[self.key],'language':['ru-RU']})
+                self.assertIn('--fail',args)
+            other=server.TmdbSeasons(root)
+            with patch.object(other,'fetch_season',side_effect=OSError('offline')) as fetch:
+                self.assertEqual(other.get_season('85552',2,self.key,'ru-RU'),self.payload)
+                fetch.assert_not_called()
+            for path in Path(root).iterdir():
+                self.assertNotIn(self.key,path.name+path.read_text())
+
+    def test_expired_metadata_survives_failure_and_errors_are_not_cached(self):
+        with tempfile.TemporaryDirectory() as root:
+            cache=server.TmdbSeasons(root)
+            with patch.object(cache,'fetch_season',return_value=self.payload):
+                cache.get_season('85552',2,self.key,'ru-RU')
+            import os
+            path=next(Path(root).glob('*.json'));os.utime(path,(0,0))
+            with patch.object(cache,'fetch_season',side_effect=OSError('offline')) as fetch:
+                self.assertEqual(cache.get_season('85552',2,self.key,'ru-RU'),self.payload)
+                self.assertEqual(cache.get_season('85552',2,self.key,'ru-RU'),self.payload)
+                fetch.assert_called_once()
+            def html(args,**kwargs):
+                Path(args[args.index('--output')+1]).write_text('<html>error</html>')
+                return subprocess_result()
+            with patch.object(server.subprocess,'run',side_effect=html):
+                with self.assertRaises(OSError):cache.get_season('85552',3,self.key,'ru-RU')
+            self.assertEqual(len(list(Path(root).glob('*.json'))),1)
+            self.assertEqual(list(Path(root).glob('season-download-*')),[])
+
+    def test_invalid_parameters_never_fetch_and_concurrent_calls_share_metadata(self):
+        with tempfile.TemporaryDirectory() as root:
+            cache=server.TmdbSeasons(root)
+            with patch.object(cache,'fetch_season',return_value=self.payload) as fetch:
+                for args in [('https://evil.test',2,self.key,'ru-RU'),('42',1000,self.key,'ru-RU'),('42',2,'bad','ru-RU'),('42',2,self.key,'ru&api_key=bad')]:
+                    with self.assertRaises(ValueError):cache.get_season(*args)
+                fetch.assert_not_called()
+                with ThreadPoolExecutor(max_workers=6) as pool:
+                    list(pool.map(lambda _:cache.get_season('85552',2,self.key,'ru-RU'),range(6)))
+                fetch.assert_called_once()
+                cache.get_season('85552',2,self.key,'en-US')
+                self.assertEqual(fetch.call_count,2)
+
+    def test_endpoint_metadata_cors_validation_and_query_redaction(self):
+        import io
+        from http.server import ThreadingHTTPServer
+        from urllib.request import urlopen
+        from urllib.error import HTTPError
+        from contextlib import redirect_stderr
+        with tempfile.TemporaryDirectory() as root:
+            cache=server.TmdbSeasons(root)
+            with patch.object(server,'TMDB_SEASONS',cache),patch.object(cache,'fetch_season',return_value=self.payload):
+                http=ThreadingHTTPServer(('127.0.0.1',0),server.Handler)
+                worker=threading.Thread(target=http.serve_forever,daemon=True);worker.start()
+                base='http://127.0.0.1:'+str(http.server_port)
+                output=io.StringIO()
+                try:
+                    with redirect_stderr(output):
+                        with urlopen(base+'/tmdb/season/85552/2.json?api_key='+self.key+'&language=ru-RU') as response:
+                            self.assertEqual(json.load(response)['episodes'][0]['still_path'],'/frame.jpg')
+                            self.assertEqual(response.headers['Access-Control-Allow-Origin'],'*')
+                        with self.assertRaises(HTTPError) as error:urlopen(base+'/tmdb/season/85552/2.json')
+                        self.assertEqual(error.exception.code,400)
+                    self.assertNotIn(self.key,output.getvalue())
+                    self.assertIn('<redacted>',output.getvalue())
+                finally:
+                    http.shutdown();http.server_close();worker.join()
+
+
 if __name__ == '__main__':
     unittest.main()

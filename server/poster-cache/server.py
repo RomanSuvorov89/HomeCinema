@@ -12,7 +12,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlsplit, parse_qs
+from urllib.parse import urlsplit, parse_qs, urlencode
 from kinoafisha_posters import KinoafishaPosters
 from urllib.request import urlopen
 
@@ -201,6 +201,82 @@ class TmdbImages(Posters):
                 raise
 
 
+class TmdbSeasons(Posters):
+    """Public season metadata; credentials are never persisted in cache keys or JSON."""
+    def fetch_season(self, tv_id, season, api_key, language):
+        source = 'https://api.themoviedb.org/3/tv/' + tv_id + '/season/' + str(season)
+        source += '?' + urlencode({'api_key':api_key, 'language':language})
+        with self.slots:
+            fd, temporary = tempfile.mkstemp(prefix='season-download-', dir=self.root)
+            os.close(fd)
+            try:
+                result = subprocess.run([
+                    'curl', '-4', '--noproxy', '*', '--fail', '--silent', '--show-error',
+                    '--doh-url', os.environ.get('TMDB_DOH_URL', 'https://cloudflare-dns.com/dns-query'),
+                    '--proto', '=https', '--connect-timeout', '4', '--max-time', '8',
+                    '--max-filesize', '2097152', '--output', temporary, source,
+                ], capture_output=True, timeout=10)
+                if result.returncode:
+                    raise OSError('TMDB season request failed (curl ' + str(result.returncode) + ')')
+                raw = Path(temporary).read_bytes()
+                if len(raw) > 2097152:
+                    raise ValueError('Season response too large')
+                payload = json.loads(raw)
+                if (not isinstance(payload, dict) or payload.get('season_number') != season
+                        or not isinstance(payload.get('episodes'), list)):
+                    raise ValueError('Invalid TMDB season response')
+                return payload
+            finally:
+                Path(temporary).unlink(missing_ok=True)
+
+    def get_season(self, tv_id, season, api_key, language):
+        tv_id = valid_id(tv_id)
+        if not tv_id or type(season) is not int or not 0 <= season <= 999:
+            raise ValueError('Invalid show or season')
+        if not re.fullmatch(r'[a-fA-F0-9]{32}', api_key or ''):
+            raise ValueError('Missing or invalid TMDB API key')
+        if not re.fullmatch(r'[a-zA-Z0-9,-]{1,64}', language):
+            raise ValueError('Invalid language')
+        key = hashlib.sha256((tv_id + ':' + str(season) + ':' + language).encode()).hexdigest()
+        path = self.root / (key + '.json')
+        with self.locks[int(key[:8], 16) % len(self.locks)]:
+            stale = None
+            if path.is_file():
+                try:
+                    payload = json.loads(path.read_bytes())
+                    if isinstance(payload.get('episodes'), list) and payload.get('season_number') == season:
+                        stale = payload
+                        if time.time() - path.stat().st_mtime < 21600:
+                            return stale
+                except (ValueError, AttributeError):
+                    pass
+            with self.state_lock:
+                if self.failures.get(key, 0) > time.monotonic():
+                    if stale is not None:
+                        return stale
+                    raise OSError('Previous season request failed; retry after 60 seconds')
+            try:
+                payload = self.fetch_season(tv_id, season, api_key, language)
+                fd, temporary = tempfile.mkstemp(prefix='season-save-', dir=self.root)
+                try:
+                    with os.fdopen(fd, 'w', encoding='utf-8') as stream:
+                        json.dump(payload, stream, ensure_ascii=False)
+                        stream.flush();os.fsync(stream.fileno())
+                    os.replace(temporary, path)
+                finally:
+                    Path(temporary).unlink(missing_ok=True)
+                print('tmdb season saved:', tv_id, season, len(payload['episodes']), flush=True)
+                return payload
+            except Exception:
+                with self.state_lock:
+                    now = time.monotonic()
+                    self.failures = {k:v for k,v in self.failures.items() if v > now}
+                    self.failures[key] = now + 60
+                if stale is not None:
+                    return stale
+                raise OSError('TMDB season fetch failed') from None
+
+
 def series_metadata(kp_id):
     """Public episode dates from the existing catalog, with no network or personal data."""
     kp_id = valid_id(kp_id)
@@ -335,10 +411,16 @@ class Catalog:
 
 POSTERS = None
 TMDB_IMAGES = None
+TMDB_SEASONS = None
 CATALOG_INDEX = Catalog()
 
 
 class Handler(BaseHTTPRequestHandler):
+    def log_message(self, format, *args):
+        # Native season URLs contain an API key. Never put query strings in logs.
+        safe = tuple(re.sub(r'\?[^ ]*', '?<redacted>', value) if isinstance(value, str) else value for value in args)
+        super().log_message(format, *safe)
+
     def send(self, code, body, content_type, cache='no-store', etag=None):
         if etag and self.headers.get('If-None-Match') == etag:
             code, body = 304, b''
@@ -364,10 +446,24 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = urlsplit(self.path).path
         if path == '/health':
-            payload = {'ok': True, 'version': '0.3.1', 'saved': len(list(POSTERS.root.glob('*.img'))),
+            payload = {'ok': True, 'version': '0.3.2', 'saved': len(list(POSTERS.root.glob('*.img'))),
                        'tmdb_saved': len(list(TMDB_IMAGES.root.glob('*.img'))) if TMDB_IMAGES else 0,
+                       'tmdb_seasons_saved': len(list(TMDB_SEASONS.root.glob('*.json'))) if TMDB_SEASONS else 0,
                        'catalog_errors': CATALOG_INDEX.snapshot()['errors']}
             self.send(200, json.dumps(payload).encode(), 'application/json')
+        elif re.fullmatch(r'/tmdb/season/[1-9][0-9]{0,9}/[0-9]{1,3}\.json', path):
+            parts = path.split('/')
+            query = parse_qs(urlsplit(self.path).query)
+            try:
+                payload = TMDB_SEASONS.get_season(parts[3], int(parts[4][:-5]),
+                    query.get('api_key', [''])[0], query.get('language', ['ru-RU'])[0])
+                self.send(200, json.dumps(payload, ensure_ascii=False).encode(),
+                          'application/json; charset=utf-8', 'private, max-age=300')
+            except ValueError:
+                self.send(400, b'{"error":"Invalid season request"}', 'application/json')
+            except Exception:
+                print('tmdb season unavailable:', parts[3], parts[4][:-5], flush=True)
+                self.send(502, b'{"error":"TMDB season unavailable"}', 'application/json')
         elif path.startswith('/tmdb/image/'):
             image_path = path[len('/tmdb/image/'):]
             if not TMDB_PATH.fullmatch(image_path):
@@ -405,5 +501,6 @@ class Handler(BaseHTTPRequestHandler):
 if __name__ == '__main__':
     POSTERS = Posters(CACHE)
     TMDB_IMAGES = TmdbImages(CACHE / "tmdb")
+    TMDB_SEASONS = TmdbSeasons(CACHE / "tmdb-seasons")
     threading.Thread(target=CATALOG_INDEX.run, daemon=True).start()
     ThreadingHTTPServer(('0.0.0.0', 9121), Handler).serve_forever()

@@ -37,7 +37,7 @@ from urllib.request import urlopen
 for attempt in range(20):
     try:
         with urlopen("http://127.0.0.1:9121/health",timeout=3) as response:
-            assert json.load(response)["version"] == "0.3.1"
+            assert json.load(response)["version"] == "0.3.2"
         with urlopen("http://127.0.0.1:9121/series/kp/1.json",timeout=3) as response:
             assert isinstance(json.load(response)["episodes"],list)
         print("Кэш изображений и дат готов")
@@ -55,6 +55,25 @@ with urlopen(address,timeout=35) as response:
     assert response.status==200
     print("TMDB с зеркала сохранён:",image_type(data),len(data),"байт")
 '
+# The key comes from the caller environment, never from a committed config.
+if [[ -n "${TMDB_API_KEY:-}" ]]; then
+  docker compose exec -T -e "TMDB_PREFLIGHT_KEY=$TMDB_API_KEY" poster-cache python -c '
+import json,os
+from urllib.parse import urlencode
+from urllib.request import urlopen
+from server import image_type
+base="http://127.0.0.1:9121"
+query=urlencode({"api_key":os.environ["TMDB_PREFLIGHT_KEY"],"language":"ru-RU"})
+with urlopen(base+"/tmdb/season/85552/2.json?"+query,timeout=20) as response:
+    episodes=json.load(response)["episodes"]
+frames=[item["still_path"] for item in episodes if item.get("still_path")]
+assert frames,"TMDB season has no frames"
+print("API сезона: серий",len(episodes),"с превью",len(frames))
+with urlopen(base+"/tmdb/image/t/p/w300"+frames[0],timeout=35) as response:
+    data=response.read()
+    print("Кадр серии сохранён:",image_type(data),len(data),"байт")
+'
+fi
 python3 install.py
 # Restore the existing profile-first order without changing catalog server sources.
 if [[ -f "$CATALOG/profiles-client.js" && -f "$CATALOG/install.py" ]]; then

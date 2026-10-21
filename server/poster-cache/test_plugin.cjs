@@ -29,7 +29,7 @@ const doc = {body:{nodeType:1,querySelectorAll:()=>[good.card,unknown.card]},
     documentElement:{contains: node=>nodes.includes(node)},querySelectorAll:()=>[],addEventListener:(name,fn)=>{listeners[name]=fn;}};
 const listeners = {};
 const context = {window:{}, document:doc, Date, setTimeout:fn=>timers.push(fn), setInterval:fn=>intervals.push(fn),
-    Lampa:{TMDB:{image:path=>'native:'+path},Listener:{follow:(key,fn)=>{listeners[key]=fn;}},Storage:{get:key=>key==='online_watched_last'?watched:settings[key],set:(k,v)=>settings[k]=v,listener:{follow:(key,fn)=>storageListener=fn}},Utils:{hash:value=>value}},
+    Lampa:{TMDB:{image:path=>'native:'+path,api:path=>'native-api:'+path},Listener:{follow:(key,fn)=>{listeners[key]=fn;}},Storage:{get:key=>key==='online_watched_last'?watched:settings[key],set:(k,v)=>settings[k]=v,listener:{follow:(key,fn)=>storageListener=fn}},Utils:{hash:value=>value}},
     Image: class {set src(value){requests++;addresses.push(value); if(failed || (failTmdb && value.includes('/tmdb/image/')))this.onerror();else this.onload();}},
     XMLHttpRequest: class {open(){} send(){this.status=200;this.responseText=JSON.stringify({paths:{},ids:{},imdb:{},seasons:seasonIndex});this.onload();}},
     MutationObserver:class {constructor(fn){observer=fn;} observe(){}}};
@@ -115,3 +115,13 @@ observer([{type:'childList',addedNodes:[fromSrc.card]}]);
 assert.equal(fromSrc.image.src,'http://server:9121/tmdb/image/t/p/w300/from-src.jpg','available native TMDB image wins even without poster_path');
 
 assert.equal(context.Lampa.TMDB.image('t/p/w300//hash.jpg'),'http://server:9121/tmdb/image/t/p/w300/hash.jpg','double path separators from catalog are normalized');
+
+const apiKey='a'.repeat(32);
+assert.equal(context.Lampa.TMDB.api('tv/85552/season/2?api_key='+apiKey+'&language=ru-RU'),
+ 'http://server:9121/tmdb/season/85552/2.json?api_key='+apiKey+'&language=ru-RU');
+assert.equal(context.Lampa.TMDB.api('tv/85552?append_to_response=credits'),'native-api:tv/85552?append_to_response=credits','other APIs retain their current handler');
+context.Lampa.TMDB.api=path=>'late-api:'+path;
+intervals[0]();
+assert.equal(context.Lampa.TMDB.api('tv/85552/season/0?api_key='+apiKey),'http://server:9121/tmdb/season/85552/0.json?api_key='+apiKey,'late plugin cannot restore the broken season route');
+assert.equal(context.Lampa.TMDB.api('search/tv?query=Euphoria'),'late-api:search/tv?query=Euphoria');
+console.log('Season API: localized metadata routes, specials and late plugins passed.');

@@ -128,11 +128,22 @@
             Lampa.Storage.set('proxy_tmdb_auto',true);
             Lampa.Storage.set('homecinema_tmdb_cache_v1',true);
         }
-        if (Lampa.TMDB.image.homecinemaCache) return;
-        var previous=Lampa.TMDB.image;
-        var handler=function (path) {return tmdbUrl(path) || previous.apply(this,arguments);};
-        handler.homecinemaCache=true;
-        Lampa.TMDB.image=handler;
+        if (!Lampa.TMDB.image.homecinemaCache) {
+            var previous=Lampa.TMDB.image;
+            var handler=function (path) {return tmdbUrl(path) || previous.apply(this,arguments);};
+            handler.homecinemaCache=true;
+            Lampa.TMDB.image=handler;
+        }
+        if (typeof Lampa.TMDB.api==='function' && !Lampa.TMDB.api.homecinemaSeasonCache) {
+            var previousApi=Lampa.TMDB.api;
+            var apiHandler=function (path) {
+                var match=String(path || '').match(/^(?:3\/)?tv\/([1-9][0-9]{0,9})\/season\/([0-9]{1,3})(?:\?(.*))?$/);
+                if (!match) return previousApi.apply(this,arguments);
+                return base+'/tmdb/season/'+match[1]+'/'+Number(match[2])+'.json'+(match[3] ? '?'+match[3] : '');
+            };
+            apiHandler.homecinemaSeasonCache=true;
+            Lampa.TMDB.api=apiHandler;
+        }
     }
 
     function card(element) {
