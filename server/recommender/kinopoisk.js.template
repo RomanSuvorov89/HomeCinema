@@ -1203,7 +1203,17 @@
       else if (document.body.classList.contains('selectbox--open') && Lampa.Select) Lampa.Select.close();
       else if (document.querySelector('.modal') && Lampa.Modal) Lampa.Modal.close();
       else Lampa.Controller.back();
-    } else Lampa.Activity.backward();
+    } else {
+      var screens=Lampa.Activity.all();
+      var activity=Lampa.Activity.active();
+      // A restored card/deep link can be the only activity. Native backward()
+      // deliberately does nothing there: replace that root with home instead.
+      if (screens.length===1 && activity && activity.component!=='main') {
+        var source=Lampa.Storage.field('source') || 'cub';
+        Lampa.Activity.replace({url:'',title:Lampa.Lang.translate('title_main')+' - '+source.toUpperCase(),
+          component:'main',source:source,page:1},true);
+      } else if (screens.length>1) Lampa.Activity.backward();
+    }
   }
 
   function installHomeUiPolish() {

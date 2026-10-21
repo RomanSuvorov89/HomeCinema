@@ -1,10 +1,13 @@
 const fs=require('fs'),vm=require('vm'),assert=require('assert/strict');
 const source=fs.readFileSync('kinopoisk.js','utf8');
 let overlay=false,top=false,active,back=0,previous=0,closed=0,click;
+let screens=[{component:'main'},{component:'full'}],replaced=[];
 const registrations={};
 const context={window:{},document:{querySelector:()=>overlay?{}:null,body:{classList:{contains:()=>false}},addEventListener:(type,fn,capture)=>{assert.equal(type,'click');assert.equal(capture,true);click=fn;}},
  Lampa:{Controller:{windowTop:()=>top,enabled:()=>active,toggle:name=>{active={controller:{back(){}}};},back:()=>back++},
- Activity:{backward:()=>previous++},Select:{close:()=>closed++},Modal:{close:()=>closed++},Component:{add:(name,ctor)=>registrations[name]=ctor}}};
+ Activity:{all:()=>screens,active:()=>screens[screens.length-1],replace:(params,clear)=>{replaced.push({params,clear});screens=[params];},backward:()=>{if(screens.length>1)previous++;}},
+ Storage:{field:()=> 'tmdb'},Lang:{translate:()=> 'Главная'},
+ Select:{close:()=>closed++},Modal:{close:()=>closed++},Component:{add:(name,ctor)=>registrations[name]=ctor}}};
 vm.createContext(context);
 vm.runInContext(source.slice(source.indexOf('  function homeBack()'),source.indexOf('  function factsComponent('))+'\nfunction factsComponent(){}',context);
 context.installHomeUiPolish();
@@ -15,8 +18,18 @@ assert.deepEqual(press(),[1,1]);assert.equal(previous,1);assert.equal(back,0);
 overlay=true;top={name:'modal'};press();assert.equal(back,1);assert.equal(previous,1,'close modal without navigating underneath');
 top=false;active={controller:{}};press();assert.equal(closed,1,'legacy modal with lost focus closes');
 assert.deepEqual(press('.unrelated'),[0,0]);
+overlay=false;screens=[{component:'full',card:{id:42},method:'tv',season:2}];
+press();
+assert.equal(replaced.length,1,'single restored card returns home instead of native no-op');
+assert.equal(replaced[0].params.component,'main');assert.equal(replaced[0].params.source,'tmdb');
+assert.equal(replaced[0].clear,true,'clear card, method and season from replaced root');
+assert.equal(previous,1,'do not call native backward at root');
+press();assert.equal(replaced.length,1,'back on home must not recreate home');
+screens=[{component:'ai_facts'}];overlay=true;top={name:'modal'};
+press();assert.equal(replaced.length,1,'root fallback must not navigate beneath modal');
+overlay=false;top=false;screens=[{component:'main'},{component:'full'}];
 assert(source.includes('.full-start__rate.button--roman-kp-rating') && source.includes('min-height:1.5em') && source.includes('white-space:nowrap'));
-console.log('UI: header back with stale focus, overlay closure, one action per click, rating sizing and facts route passed');
+console.log('UI: header back with stale focus, restored root, home no-op, overlay closure, one action per click, rating sizing and facts route passed');
 // Exercise the custom facts component lifecycle with the same public Lampa APIs.
 class Q {
  constructor(nodes){this.nodes=nodes||[];this.length=this.nodes.length;this.nodes.forEach((n,i)=>this[i]=n);}
