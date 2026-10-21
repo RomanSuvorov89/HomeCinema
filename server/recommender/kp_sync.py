@@ -1717,7 +1717,8 @@ def schedule_card_refresh(kp_id, media_type):
     threading.Thread(target=refresh, daemon=True).start()
 
 
-def card_ratings(params):
+def card_ratings(params, profile_id=None):
+    profile_id = PROFILE_ID if profile_id is None else profile_id
     with CARD_LOOKUP_LOCK:
         connection = direct_connection()
         try:
@@ -1771,16 +1772,16 @@ def card_ratings(params):
                 schedule_card_refresh(row["kp_id"], row["media_type"])
             own = connection.execute(
                 "SELECT rating FROM user_ratings WHERE profile_id=? AND kp_id=?",
-                (PROFILE_ID, row["kp_id"]),
+                (profile_id, row["kp_id"]),
             ).fetchone()
             from candidate_engine import predict_card
             prediction = None
             if not own and row['metadata_status'] == 'ready':
                 if cached_only:
-                    score = connection.execute('SELECT predicted_rating FROM candidate_scores WHERE profile_id=? AND kp_id=? ORDER BY formula_version DESC LIMIT 1', (PROFILE_ID, row['kp_id'])).fetchone()
-                    prediction = score[0] if score else predict_card(connection, PROFILE_ID, row['kp_id'], row['kp_rating'])
+                    score = connection.execute('SELECT predicted_rating FROM candidate_scores WHERE profile_id=? AND kp_id=? ORDER BY formula_version DESC LIMIT 1', (profile_id, row['kp_id'])).fetchone()
+                    prediction = score[0] if score else predict_card(connection, profile_id, row['kp_id'], row['kp_rating'])
                 else:
-                    prediction = predict_card(connection, PROFILE_ID, row['kp_id'], row['kp_rating'])
+                    prediction = predict_card(connection, profile_id, row['kp_id'], row['kp_rating'])
             return {
                 "found": True,
                 "kp_id": row["kp_id"],
@@ -1905,7 +1906,35 @@ class Handler(BaseHTTPRequestHandler):
     def do_OPTIONS(self):
         self.review_response(200, {})
 
+    def route_profile(self):
+        parsed = urlparse(self.path)
+        match = re.fullmatch(r'/p/([A-Za-z0-9_-]{1,80})(/.*)', parsed.path)
+        if not match:
+            return PROFILE_ID
+        profile = match[1]
+        connection = direct_connection()
+        try:
+            if not connection.execute('SELECT 1 FROM profiles WHERE profile_id=?', (profile,)).fetchone():
+                raise ValueError('Unknown profile')
+        finally:
+            connection.close()
+        self.path = match[2] + ('?' + parsed.query if parsed.query else '')
+        return profile
+
+    def prepare_profile(self):
+        try:
+            return self.route_profile()
+        except ValueError as error:
+            self.review_response(404, {'error': str(error)})
+            return None
+
     def do_POST(self):
+        from profiles import handle
+        if handle(self, direct_connection, PROFILE_ID, PROFILE_DISPLAY_NAME):
+            return
+        profile_id = self.prepare_profile()
+        if profile_id is None:
+            return
         path = urlparse(self.path).path
         if path not in ("/review-feedback.json", "/track-preferences.json", "/client-diagnostics.json"):
             self.review_response(404, {"error": "Not found"})
@@ -1931,9 +1960,9 @@ class Handler(BaseHTTPRequestHandler):
             connection = direct_connection()
             if path == "/track-preferences.json":
                 from track_preferences import save
-                result = save(connection, PROFILE_ID, payload)
+                result = save(connection, profile_id, payload)
             else:
-                result = save_feedback(connection, PROFILE_ID, payload)
+                result = save_feedback(connection, profile_id, payload)
             self.review_response(200, result)
         except (ValueError, TypeError) as error:
             self.review_response(400, {"error": str(error)})
@@ -1945,27 +1974,54 @@ class Handler(BaseHTTPRequestHandler):
                 connection.close()
 
     def do_GET(self):
+        from profiles import handle
+        if handle(self, direct_connection, PROFILE_ID, PROFILE_DISPLAY_NAME):
+            return
+        profile_id = self.prepare_profile()
+        if profile_id is None:
+            return
         parsed_url = urlparse(self.path)
         path = parsed_url.path
+        if path == '/notifications.json':
+            connection = direct_connection()
+            try:
+                from profiles import notices
+                self.review_response(200, notices(connection, profile_id, HOME_CACHE))
+            except Exception:
+                self.review_response(200, {'items': []})
+            finally:
+                connection.close()
+            return
+        if path == '/data.json' and profile_id != PROFILE_ID:
+            connection = direct_connection()
+            try:
+                from profiles import catalog_data
+                self.review_response(200, catalog_data(connection, profile_id))
+            finally:
+                connection.close()
+            return
+        if profile_id != PROFILE_ID and path in ('/report.json', '/report.md', '/recommendations.json', '/recommendations.md', '/airing.json'):
+            self.review_response(200, {'profile_id': profile_id, 'groups': [], 'items': []})
+            return
         if path == "/prediction-calibration.json":
             connection=direct_connection()
             try:
                 from candidate_engine import stored_rating_model
-                self.review_response(200,stored_rating_model(connection,PROFILE_ID) or {'ready':False})
+                self.review_response(200,stored_rating_model(connection,profile_id) or {'ready':False})
             finally:
                 connection.close()
             return
         if path == "/review-cached.json":
             revision=parse_qs(parsed_url.query).get('revision',[''])[0]
-            self.review_response(200,HOME_CACHE.review_snapshot(PROFILE_ID,revision) if HOME_CACHE else
-                {'profile_id':PROFILE_ID,'items':[],'revision':'','warming':True})
+            self.review_response(200,HOME_CACHE.review_snapshot(profile_id,revision) if HOME_CACHE else
+                {'profile_id':profile_id,'items':[],'revision':'','warming':True})
             return
         if path == "/home.json":
             # Read-only: never trigger fetching, scoring or cache rebuilding here.
             from review_api import home_snapshot
             connection=direct_connection()
             try:
-                self.review_response(200, home_snapshot(connection, HOME_CACHE, PROFILE_ID))
+                self.review_response(200, home_snapshot(connection, HOME_CACHE, profile_id))
             finally:
                 connection.close()
             return
@@ -1980,7 +2036,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 connection = direct_connection()
                 series = parse_qs(parsed_url.query).get('series_key', [''])[0]
-                self.review_response(200, read(connection, PROFILE_ID, series))
+                self.review_response(200, read(connection, profile_id, series))
             except ValueError as error:
                 self.review_response(400, {"error": str(error)})
             except Exception as error:
@@ -1989,6 +2045,14 @@ class Handler(BaseHTTPRequestHandler):
             finally:
                 if connection is not None:
                     connection.close()
+            return
+        if path == "/review.json" and profile_id != PROFILE_ID:
+            connection = direct_connection()
+            try:
+                from review_api import review_data
+                self.review_response(200, review_data(connection, profile_id, {}))
+            finally:
+                connection.close()
             return
         if path == "/review.json":
             from review_api import review_data
@@ -1999,12 +2063,12 @@ class Handler(BaseHTTPRequestHandler):
                     report = json.loads(RECOMMENDATIONS_JSON_FILE.read_text(encoding="utf-8"))
                     from candidate_engine import RECOMMENDATION_FORMULA_VERSION
                     if report.get('formula_version') and report['formula_version'] != RECOMMENDATION_FORMULA_VERSION:
-                        report = write_recommendation_reports(connection, PROFILE_ID,
+                        report = write_recommendation_reports(connection, profile_id,
                             RECOMMENDATIONS_JSON_FILE, RECOMMENDATIONS_MD_FILE, 50)
                 else:
-                    report = write_recommendation_reports(connection, PROFILE_ID,
+                    report = write_recommendation_reports(connection, profile_id,
                         RECOMMENDATIONS_JSON_FILE, RECOMMENDATIONS_MD_FILE, 50)
-                self.review_response(200, review_data(connection, PROFILE_ID, report))
+                self.review_response(200, review_data(connection, profile_id, report))
             except Exception as error:
                 print(f"review read failed: {error}", flush=True)
                 self.review_response(503, {"error": "Review is not ready yet"})
@@ -2027,7 +2091,7 @@ class Handler(BaseHTTPRequestHandler):
                 }).encode()
                 content_type = "application/json; charset=utf-8"
             elif path == "/kinopoisk.js":
-                raw = (APP_DIR / 'client-defaults.js').read_bytes() + b'\n' + PLUGIN_FILE.read_bytes() + b'\n' + (APP_DIR / 'track-memory.js').read_bytes()
+                raw = ((APP_DIR / 'profiles-client.js').read_bytes() if (APP_DIR / 'profiles-client.js').is_file() else b'') + b'\n' + (APP_DIR / 'client-defaults.js').read_bytes() + b'\n' + PLUGIN_FILE.read_bytes() + b'\n' + (APP_DIR / 'track-memory.js').read_bytes()
                 content_type = "application/javascript; charset=utf-8"
             elif path == "/report.json":
                 raw = REPORT_JSON_FILE.read_bytes()
@@ -2062,7 +2126,7 @@ class Handler(BaseHTTPRequestHandler):
                     connection.close()
                 content_type = "application/json; charset=utf-8"
             elif path == "/card-ratings.json":
-                raw = json.dumps(card_ratings(parse_qs(parsed_url.query)), ensure_ascii=False).encode("utf-8")
+                raw = json.dumps(card_ratings(parse_qs(parsed_url.query), profile_id), ensure_ascii=False).encode("utf-8")
                 content_type = "application/json; charset=utf-8"
             else:
                 raw = DATA_FILE.read_bytes()

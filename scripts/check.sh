@@ -6,6 +6,7 @@ while IFS= read -r file; do bash -n "$file"; done < <(find server scripts -type 
 python3 -m compileall -q server scripts
 python3 scripts/test_portable.py
 python3 scripts/test_actions_install.py
+python3 scripts/test_profiles_install.py
 python3 scripts/test_apple_theme.py
 node scripts/test_apple_theme.cjs
 node scripts/test_prefetch.cjs

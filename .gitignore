@@ -18,3 +18,5 @@ __pycache__/
 *.sql-shm
 *.before-*
 .env
+
+server/recommender/profiles-client.js

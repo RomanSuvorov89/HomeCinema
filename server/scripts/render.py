@@ -41,7 +41,7 @@ def render():
         raise ValueError('Unsupported upstream Lampac initialization: no files changed')
     rec = ROOT / 'recommender'
     rendered = {}
-    for name in ('client-defaults.js', 'kinopoisk.js', 'client-bootstrap.js'):
+    for name in ('client-defaults.js', 'kinopoisk.js', 'client-bootstrap.js', 'profiles-client.js'):
         rendered[name] = (rec / (name + '.template')).read_text().replace('__RECOMMENDER_PUBLIC_URL__', recommender).replace('__TORRSERVER_PUBLIC_URL__', torrserver)
     payload = []
     for name in ('client-defaults.js', 'kinopoisk.js', 'track-memory.js'):
@@ -87,6 +87,7 @@ def render():
     prefix = family + watch.BEGIN + '\n' + watch_js + '\n' + watch.END + '\n' + prefetch.BEGIN + '\n' + prefetch.SCRIPT + '\n' + prefetch.END + '\n/* roman-poster-cache:start */\n' + poster_js + '\n/* roman-poster-cache:end */\n/* roman-bootstrap-start */\n' + bootstrap + '\n/* roman-bootstrap-end */\n'
     if os.environ.get('APPLE_TV_THEME', '1') == '1':
         prefix = load('set-apple-theme').bundle(PROJECT) + prefix
+    prefix = '/* homecinema-profiles:start */\n' + rendered['profiles-client.js'] + '\n/* homecinema-profiles:end */\n' + prefix
     result = prefix + text + '\n' + (ROOT / 'templates/mpv-bridge.js').read_text() + '\n'
     for name, body in rendered.items():
         (rec / name).write_text(body,encoding='utf-8')

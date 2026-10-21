@@ -46,7 +46,7 @@ def apply(target, lampainit, ref):
         if anchor in patched:
             if patched.count(anchor)!=1:raise ValueError('Unexpected home.json handler')
             patched=patched.replace(anchor,replacement)
-        elif replacement not in patched:raise ValueError('Unsupported home.json handler')
+        elif replacement not in patched and replacement.replace('HOME_CACHE, PROFILE_ID','HOME_CACHE, profile_id') not in patched:raise ValueError('Unsupported home.json handler')
         changes={target/'kp_sync.py':patched,
                  target/'review_api.py':(work/'review_api.py').read_text(),
                  target/'kinopoisk.js':(work/'kinopoisk.js.template').read_text().replace('__RECOMMENDER_PUBLIC_URL__',base)}

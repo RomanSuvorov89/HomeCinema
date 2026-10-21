@@ -39,6 +39,10 @@ def install(target):
       url: "http://127.0.0.1:9120/kinopoisk.js", status: 1});
 '''.replace('http://127.0.0.1:9120/kinopoisk.js', plugin_url), 1)
     text = block + text
+    profile_script = root / 'profiles-client.js'
+    if profile_script.is_file():
+        text = re.sub(r'/\* homecinema-profiles:start \*/.*?/\* homecinema-profiles:end \*/\n?', '', text, flags=re.S)
+        text = '/* homecinema-profiles:start */\n' + profile_script.read_text() + '\n/* homecinema-profiles:end */\n' + text
     if text == original:
         print('Центральные настройки уже актуальны')
         return

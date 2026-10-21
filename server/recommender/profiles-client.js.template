@@ -1,0 +1,336 @@
+/* HomeCinema profiles: applied before the catalog and external sync plugins. */
+(function () {
+    'use strict';
+    if (window.HomeCinemaProfiles) return;
+    var base = '__RECOMMENDER_PUBLIC_URL__';
+    var settings = ['homecinema_appearance','language','tmdb_lang','source','poster_size','menu_sort',
+        'full_btn_priority','interface_sound_level','video_quality_default','subtitles_start',
+        'player_normalization','player_subs_shift_time','roman_review_filters_v1',
+        'roman_hidden_home_v1','homecinema_notice_read','search_history'];
+    var history = ['favorite','file_view','online_watched_last','online_view','online_last_balanser',
+        'torrents_view','torrents_filter_data','kp_rating','timetable'];
+    var fields = settings.concat(history), active = null, profiles = [], owner = '', started = false;
+    var callbacks = [], ready = false, busy = false, flight = null, baseline = {}, timer, errorText = '', notices = [];
+    var counter = 0, guardsReady = false, disabled = false, conflict = false;
+    function clone(value) {return JSON.parse(JSON.stringify(value));}
+    function equal(a,b) {return JSON.stringify(a) === JSON.stringify(b);}
+    function stored(key, fallback) {
+        try {var raw=localStorage.getItem(key); return raw === null ? fallback : JSON.parse(raw);} catch (_) {return fallback;}
+    }
+    function persist(key, value) {localStorage.setItem(key, JSON.stringify(value));}
+    function read(key, fallback) {
+        var raw=localStorage.getItem(key);
+        if(raw==='false') return false;
+        if(raw==='0') return 0;
+        if (window.Lampa && Lampa.Storage) return Lampa.Storage.get(key, fallback);
+        return stored(key, fallback);
+    }
+    function write(key, value) {
+        if (window.Lampa && Lampa.Storage) {
+            var failed;
+            Lampa.Storage.set(key, value, true, function (error) {failed=error;});
+            if (failed) throw failed;
+        } else localStorage.setItem(key, typeof value === 'object' ? JSON.stringify(value) : String(value));
+    }
+    function capture() {
+        var values={};
+        fields.forEach(function (key) {
+            var value=read(key, '');
+            values[key]=clone(value);
+        });
+        return values;
+    }
+    function apply(values) {
+        fields.forEach(function (key) {write(key, Object.prototype.hasOwnProperty.call(values,key) ? values[key] : '');});
+    }
+    function scopeCaches() {
+        ['get','set','cache'].forEach(function (name) {
+            var original=Lampa.Storage[name];
+            if (typeof original !== 'function') return;
+            Lampa.Storage[name]=function () {
+                var args=Array.prototype.slice.call(arguments), key=args[0];
+                if(active && /^(roman_card_ratings|roman_home_shelves|roman_review_snapshot|roman_kinopoisk_cards|recomends_)/.test(key || ''))
+                    args[0]='homecinema_cache_'+active.id+'_'+key;
+                return original.apply(this,args);
+            };
+        });
+    }
+    function clearCaches() {
+        Object.keys(localStorage).forEach(function (key) {
+            if (/^(roman_card_ratings|roman_home_shelves|roman_review_snapshot|roman_kinopoisk_cards|recomends_)/.test(key)) write(key,'');
+        });
+        ['lampac_sync_view','lampac_bookmark_version','lampac_bookmark_scope'].forEach(function (key) {write(key,'');});
+    }
+    function notify(text) {if (window.Lampa && Lampa.Noty) Lampa.Noty.show(text);}
+    function request(path, payload) {
+        return new Promise(function (resolve,reject) {
+            var xhr=new XMLHttpRequest();
+            xhr.open(payload ? 'POST' : 'GET',base+path,true);
+            xhr.timeout=12000;
+            if (payload) xhr.setRequestHeader('Content-Type','application/json');
+            xhr.onload=function () {
+                var result;
+                try {result=JSON.parse(xhr.responseText);} catch (_) {}
+                if (xhr.status>=200 && xhr.status<300 && result) resolve(result);
+                else {var error=new Error(result && result.error || 'Нет связи с сервером профилей');error.status=xhr.status;reject(error);}
+            };
+            xhr.onerror=xhr.ontimeout=function () {reject(new Error('Нет связи с сервером профилей'));};
+            xhr.send(payload ? JSON.stringify(payload) : null);
+        });
+    }
+    function device() {
+        var id=stored('homecinema_device_v1','');
+        if (!id) {id='d_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,12);persist('homecinema_device_v1',id);}
+        return id;
+    }
+    function baseKey(id) {return 'homecinema_profile_base_v1_'+id;}
+    function migratedKey(id) {return 'homecinema_profile_migrated_v1_'+id;}
+    function setActive(profile) {
+        active=profile;
+        persist('homecinema_active_profile_v1',profile);
+        write('lampac_profile_id',profile.lampac_profile_id);
+    }
+    function finish() {
+        ready=true;
+        callbacks.splice(0).forEach(function (fn) {fn();});
+        bindButtons();
+    }
+    function applyPending() {
+        var pending=stored('homecinema_profile_pending_v1',null);
+        if (!pending) return;
+        if (!pending.profile || typeof pending.profile.id !== 'string' || !pending.values || typeof pending.values !== 'object') throw new Error('Неверный снимок профиля');
+        var old=capture(), oldActive=stored('homecinema_active_profile_v1',null);
+        // This runs on the new page, while old-profile requests remain in the old page.
+        try {
+            apply(pending.values);
+            clearCaches();
+            setActive(pending.profile);
+            persist(baseKey(active.id),pending.baseline || {});
+            persist(migratedKey(active.id),true);
+            localStorage.removeItem('homecinema_profile_pending_v1');
+        } catch (error) {
+            apply(old);
+            if(oldActive) setActive(oldActive);
+            localStorage.removeItem('homecinema_profile_pending_v1');
+            throw error;
+        }
+    }
+    // Prevent unscoped legacy bookmark events from entering another profile.
+    function guardEvents() {
+        if (guardsReady) return;
+        guardsReady=true;
+        document.addEventListener('lwsEvent',function (event) {
+            if (!active || !event.detail || event.detail.name !== 'bookmark') return;
+            try {
+                var message=typeof event.detail.data==='string' ? JSON.parse(event.detail.data) : event.detail.data;
+                if (String(message.profile_id || '') !== String(active.lampac_profile_id)) event.stopImmediatePropagation();
+            } catch (_) {event.stopImmediatePropagation();}
+        },true);
+    }
+    function sync(seed) {
+        if (busy && flight) return flight;
+        if (!active || busy) return Promise.reject(new Error('Сохранение профиля уже выполняется'));
+        var id=active.id, before=capture(), changes={};
+        Object.keys(before).forEach(function (key) {if (seed || !equal(before[key],baseline[key])) changes[key]=before[key];});
+        busy=true;
+        var pending = !seed && !Object.keys(changes).length
+            ? request('/profile-state.json?id='+encodeURIComponent(id))
+            : request('/profile-state.json',{profile_id:id,device_id:device(),seed:!!seed,base:baseline,values:changes});
+        flight = pending
+            .then(function (state) {
+                if (!active || active.id !== id) return;
+                // Changes made while the request was in flight remain dirty for the next save.
+                var now=capture();
+                var changedFavorite=false, changedTheme=false;
+                Object.keys(state.values).forEach(function (key) {
+                    if (fields.indexOf(key)!==-1 && equal(now[key],before[key]) && !equal(now[key],state.values[key])) {
+                        write(key,state.values[key]);
+                        if(key==='favorite') changedFavorite=true;
+                        if(key==='homecinema_appearance') changedTheme=true;
+                    }
+                });
+                if(changedFavorite && Lampa.Favorite) {if(Lampa.Favorite.read) Lampa.Favorite.read(true);else Lampa.Favorite.init();}
+                if(changedTheme && window.HomeCinemaAppleTheme) HomeCinemaAppleTheme.setEnabled(state.values.homecinema_appearance==='apple');
+                baseline=clone(state.values);
+                persist(baseKey(id),baseline);
+                persist(migratedKey(id),true);
+                errorText='';conflict=false;
+            }).catch(function (error) {errorText=error.message;conflict=error.status===409;throw error;})
+            .then(function () {busy=false;flight=null;},function (error) {busy=false;flight=null;throw error;});
+        return flight;
+    }
+    function switchTo(profile) {
+        if (!active || active.id === profile.id) return Promise.resolve();
+        if (Lampa.Player && Lampa.Player.opened && Lampa.Player.opened()) return Promise.reject(new Error('Сначала завершите воспроизведение'));
+        return sync(false).then(function () {
+            if(!equal(capture(),baseline)) return sync(false);
+        }).then(function () {
+            return request('/profile-state.json?id='+encodeURIComponent(profile.id));
+        }).then(function (state) {
+            var values=state.revision ? state.values : {homecinema_appearance:'apple',source:'cub'};
+            persist('homecinema_profile_pending_v1',{profile:profile,values:values,baseline:state.values});
+            window.location.reload();
+        });
+    }
+    function resolveSettings(keepLocal) {
+        return request('/profile-state.json?id='+encodeURIComponent(active.id)).then(function(state) {
+            busy=true;
+            try {
+                settings.forEach(function(key) {
+                    var value=Object.prototype.hasOwnProperty.call(state.values,key) ? state.values[key] : '';
+                    baseline[key]=value;
+                    if(!keepLocal) write(key,value);
+                });
+                persist(baseKey(active.id),baseline);
+                if(!keepLocal && window.HomeCinemaAppleTheme) HomeCinemaAppleTheme.setEnabled(read('homecinema_appearance','apple')==='apple');
+            } finally {busy=false;}
+            return sync(false);
+        });
+    }
+    function returnHead() {Lampa.Controller.toggle('head');}
+    function menu() {
+        if (!active) {connect();return;}
+        var items=profiles.map(function (profile) {return {title:profile.name,subtitle:profile.id===active.id ? 'Текущий профиль' : '',profile:profile};});
+        items.push({title:'Добавить профиль',action:'create'});
+        items.push({title:'Переименовать текущий профиль',action:'rename'});
+        items.push({title:'Сохранить профиль сейчас',action:'save',subtitle:errorText || 'История и личные настройки сохраняются автоматически'});
+        if(conflict) {items.push({title:'Восстановить настройки с сервера',action:'remote'});items.push({title:'Сохранить мои настройки вместо серверных',action:'local'});}
+        Lampa.Select.show({title:'Кто смотрит?',items:items,onBack:returnHead,onSelect:function (item) {
+            returnHead();
+            if (item.action==='remote' || item.action==='local') resolveSettings(item.action==='local').catch(function(e) {notify(e.message);});
+            if (item.profile) switchTo(item.profile).catch(function (e) {notify(e.message);});
+            if (item.action==='save') sync(false).then(function () {notify('Профиль сохранён');},function (e) {notify(e.message);});
+            if (item.action==='rename') Lampa.Input.edit({title:'Имя профиля',value:active.name,free:true,nosave:true,nomic:true},function(name) {
+                returnHead();
+                if(!name) return;
+                request('/profiles.json',{action:'rename',profile_id:active.id,name:name}).then(function() {
+                    active.name=name.trim();persist('homecinema_active_profile_v1',active);
+                    profiles.forEach(function(p) {if(p.id===active.id) p.name=active.name;});bindButtons();
+                }).catch(function(e) {notify(e.message);});
+            });
+            if (item.action==='create') Lampa.Input.edit({title:'Имя нового профиля',value:'',free:true,nosave:true,nomic:true},function (name) {
+                returnHead();
+                if (!name) return;
+                request('/profiles.json',{name:name}).then(function (result) {
+                    return request('/profiles.json').then(function (data) {
+                        profiles=data.profiles;
+                        return switchTo(profiles.filter(function (p) {return p.id===result.id;})[0]);
+                    });
+                }).catch(function (e) {notify(e.message);});
+            });
+        }});
+    }
+    function showNotices() {
+        if (errorText) notify('Не удалось сохранить профиль: '+errorText);
+        var readIds=read('homecinema_notice_read',[]), items=notices.map(function (n) {
+            return {title:n.title+' · '+n.season+'×'+String(n.episode).replace(/^(\d)$/,'0$1'),
+                subtitle:n.date+' · '+n.text+(readIds.indexOf(n.id)>=0 ? ' · Прочитано' : ''),notice:n};
+        });
+        if (!items.length) items.push({title:'Новых уведомлений нет',subtitle:'Здесь появятся новые серии оценённых сериалов по расписанию.'});
+        items.unshift({title:'Отметить всё прочитанным',action:'read'});
+        Lampa.Select.show({title:'Уведомления',items:items,onBack:returnHead,onSelect:function (item) {
+            returnHead();
+            if (item.action==='read') readIds=notices.map(function (n) {return n.id;}).concat(readIds);
+            if (item.notice && readIds.indexOf(item.notice.id)<0) readIds.push(item.notice.id);
+            Lampa.Storage.set('homecinema_notice_read',readIds.filter(function (v,i,a) {return a.indexOf(v)===i;}).slice(-500));
+            refreshBadge();
+            if (item.notice && item.notice.card) {
+                var card=item.notice.card;
+                Lampa.Activity.push({url:'',component:'full',id:card.id,method:'tv',card:card,source:card.source || 'cub'});
+            }
+        }});
+    }
+    function refreshBadge() {
+        if (!window.Lampa) return;
+        var ids=read('homecinema_notice_read',[]), count=notices.filter(function (n) {return ids.indexOf(n.id)<0;}).length;
+        var bell=document.querySelector('.head .notice--icon, .head .open--notice');
+        if (bell) {bell.setAttribute('data-homecinema-count',count ? String(count) : errorText ? '!' : '0');bell.classList.toggle('homecinema-unread',count>0 || !!errorText);}
+    }
+    function pollNotices() {
+        if (!active) return;
+        request('/p/'+encodeURIComponent(active.id)+'/notifications.json').then(function (data) {notices=data.items || [];refreshBadge();}).catch(function () {});
+    }
+    function bindButtons() {
+        if (disabled || !window.Lampa || !Lampa.Select || typeof $ !== 'function') return;
+        $('.head .open--profile').each(function () {
+            var node=this;
+            if (node.homecinemaBound) return;
+            node.homecinemaBound=true;
+            $(node).off('hover:enter').on('hover:enter',menu);
+        });
+        var profile=document.querySelector('.head .open--profile');
+        if (profile && active) {
+            profile.setAttribute('title',active.name);
+            profile.setAttribute('data-homecinema-profile',active.name.slice(0,1).toUpperCase());
+            profile.classList.add('homecinema-profile');
+        }
+        $('.head .notice--icon, .head .open--notice').each(function () {
+            if (this.homecinemaBound) return;
+            this.homecinemaBound=true;
+            this.classList.add('homecinema-bell');
+            $(this).off('hover:enter').on('hover:enter',showNotices);
+        });
+        if (Lampa.Notice && !Lampa.Notice.homecinemaManaged) {
+            clearInterval(Lampa.Notice.blick_timer);
+            Lampa.Notice.drawCount=refreshBadge;
+            Lampa.Notice.homecinemaManaged=true;
+        }
+        refreshBadge();
+    }
+    function connect() {
+        request('/profiles.json').then(function (data) {
+            profiles=data.profiles;owner=data.owner_id;
+            persist('homecinema_profile_manifest_v1',data);
+            var local=stored('homecinema_active_profile_v1',null);
+            var selected=profiles.filter(function (p) {return p.id === (local && local.id || owner);})[0];
+            if (!selected) throw new Error('Сохранённый профиль отсутствует на сервере');
+            setActive(selected);
+            baseline=stored(baseKey(active.id),{});
+            return sync(!stored(migratedKey(active.id),false));
+        }).then(function () {finish();pollNotices();},function (error) {
+            errorText=error.message;
+            notify(error.message);
+            finish();
+        });
+    }
+    function start() {
+        if (started) return;
+        if (!(window.Lampa && Lampa.Storage && document.body)) return setTimeout(start,20);
+        started=true;
+        if (read('account',{}).token) {disabled=true;finish();return;}
+        scopeCaches();
+        guardEvents();
+        try {applyPending();} catch (error) {notify('Переключение отменено: '+error.message);}
+        active=stored('homecinema_active_profile_v1',null);
+        var manifest=stored('homecinema_profile_manifest_v1',{});
+        profiles=manifest.profiles || [];owner=manifest.owner_id || '';
+        if (active) {write('lampac_profile_id',active.lampac_profile_id);baseline=stored(baseKey(active.id),{});}
+        connect();
+        timer=setInterval(function () {
+            bindButtons();
+            if (ready && active && !busy) sync(false).catch(function () {refreshBadge();});
+            if (++counter % 30 === 0) {if(active) pollNotices();else connect();}
+        },2000);
+        Lampa.Storage.listener.follow('change',function (e) {
+            if(e.name==='online_watched_last' && ready) {
+                var last=clone(read('online_watched_last',{})), previous=baseline.online_watched_last || {};
+                Object.keys(last).forEach(function(key) {
+                    var value=last[key], old=previous[key] || {};
+                    if(value && typeof value==='object' && (value.season!==old.season || value.episode!==old.episode)) value._hc_updated=Date.now();
+                });
+                write('online_watched_last',last);
+            }
+            if (fields.indexOf(e.name)>=0 && ready && !busy) sync(false).catch(function () {refreshBadge();});
+        });
+        document.addEventListener('visibilitychange',function () {
+            if (!document.hidden && active && !busy) sync(false).catch(function () {});
+        });
+        var style=document.createElement('style');
+        style.textContent='.homecinema-profile{position:relative}.homecinema-profile.focus:after,.homecinema-profile.hover:after{background:#f5f5f7;color:#111319}.homecinema-profile:after{content:attr(data-homecinema-profile);position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:#242733;border-radius:50%;font-size:.8em;font-weight:600}.head .homecinema-bell:not(.homecinema-unread):after{display:none!important}.head .homecinema-bell.homecinema-unread:after{content:attr(data-homecinema-count);position:absolute;right:0;top:0;background:#e85959;color:white;border-radius:1em;font-size:.5em;padding:.15em .35em}';
+        document.head.appendChild(style);
+    }
+    window.HomeCinemaProfiles={whenReady:function (fn) {if(ready) fn();else callbacks.push(fn);},
+        apiBase:function () {return active ? base+'/p/'+encodeURIComponent(active.id) : base;},
+        menu:menu, save:function () {return sync(false);}, capture:capture, switchTo:switchTo};
+    start();
+})();

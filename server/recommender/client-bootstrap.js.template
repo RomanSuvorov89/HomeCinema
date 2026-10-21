@@ -67,8 +67,12 @@
             else report('bootstrap','Lampa API not ready');
             return;
         }
+        function runPayload() {
         /* ROMAN_EMBEDDED_PAYLOAD */
         report('ready','home=' + !!Lampa.Api.sources.cub.main.romanAiHome + '; core=' + !!window.romanKinopoiskStarted + '; player=' + Lampa.Storage.get('player_torrent',''));
+        }
+        if (window.HomeCinemaProfiles) window.HomeCinemaProfiles.whenReady(runPayload);
+        else runPayload();
     }
     boot();
 })();

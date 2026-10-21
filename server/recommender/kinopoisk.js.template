@@ -4,6 +4,10 @@
 
   var DATA_URL = '__RECOMMENDER_PUBLIC_URL__/data.json';
   var CARD_RATINGS_URL = '__RECOMMENDER_PUBLIC_URL__/card-ratings.json';
+  if (window.HomeCinemaProfiles) {
+    DATA_URL = window.HomeCinemaProfiles.apiBase() + '/data.json';
+    CARD_RATINGS_URL = window.HomeCinemaProfiles.apiBase() + '/card-ratings.json';
+  }
   var COMPONENT = 'roman_kinopoisk';
   var SHELF_COMPONENT = 'roman_home_shelf';
   var REVIEW_COMPONENT = 'roman_recommendation_review';

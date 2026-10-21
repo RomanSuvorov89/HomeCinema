@@ -37,7 +37,7 @@ class PortableTest(unittest.TestCase):
             subprocess.run(cmd,env=env,check=True,capture_output=True)
             # Render production build context locally for the existing component tests.
             for p in (root/'server/recommender').glob('*.js'):
-                if p.name in ('client-defaults.js','client-bootstrap.js','kinopoisk.js'):
+                if p.name in ('client-defaults.js','client-bootstrap.js','kinopoisk.js','profiles-client.js'):
                     shutil.copy2(p,ROOT/'server/recommender'/p.name)
 
     def test_alias_uses_correct_disk_cache(self):
