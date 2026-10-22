@@ -2,7 +2,7 @@ const fs=require('fs'),vm=require('vm'),assert=require('assert/strict');
 const code=fs.readFileSync('profiles-client.js.template','utf8').replace('__RECOMMENDER_PUBLIC_URL__','http://server:9120');
 const data=new Map(),states=new Map(),requests=[];
 const people=[{id:'owner',name:'Main',owner:true,lampac_profile_id:''},{id:'hc_other',name:'Second',owner:false,lampac_profile_id:'hc_other'}];
-let reloads=0,offline=false;
+let reloads=0,offline=false,generation='';
 function json(value){return JSON.parse(JSON.stringify(value));}
 function page(){
  const nodes={},events={},intervals=[];
@@ -33,13 +33,14 @@ function page(){
     if(offline){this.status=503;result={error:'offline'};}
     else {
      this.status=200;
-     if(url.pathname==='/profiles.json'){if(payload && payload.action==='rename'){people.find(p=>p.id===payload.profile_id).name=payload.name;result={ok:true};}else result={owner_id:'owner',profiles:people};}
+     if(url.pathname==='/profiles.json'){if(payload && payload.action==='rename'){people.find(p=>p.id===payload.profile_id).name=payload.name;result={ok:true};}else result={owner_id:'owner',profiles:people,generation:generation};}
      else if(url.pathname==='/profile-state.json'){
       const id=payload?payload.profile_id:url.searchParams.get('id');
       let state=states.get(id)||{profile_id:id,revision:0,values:{}};
       if(payload){state={profile_id:id,revision:state.revision+1,values:Object.assign({},state.values,payload.values)};states.set(id,json(state));}
       result=state;
-     } else result={items:[]};
+     } else if(url.pathname==='/cloud/device-restore.json') result={values:{torrserver_url:'http://ts.home:8090'}};
+     else result={items:[]};
     }
     this.responseText=JSON.stringify(result);this.onload();
    };}};
@@ -93,5 +94,12 @@ const tick=()=>new Promise(r=>setImmediate(r));
  third.nodes.bell.handlers['hover:enter']();assert.equal(third.context.menu.title,'Уведомления');
  assert.equal(third.nodes.bell.children.length,1,'badge belongs to the bell, polling does not duplicate it');
  assert.equal(third.nodes.bell.children[0].attrs['aria-hidden'],'true');
+ generation='restored-epoch';
+ states.set('owner',{profile_id:'owner',revision:100,values:{favorite:{card:[{id:999}],history:[999]},homecinema_appearance:'apple',source:'cub'}});
+ const restored=page();await tick();
+ assert.deepEqual(restored.Storage.get('favorite',{}),{card:[{id:999}],history:[999]},'restored server state wins over old local history before seeding');
+ assert.equal(restored.Storage.get('torrserver_url',''),'http://ts.home:8090','DNS service address restored on new epoch');
+ assert.equal(data.get('homecinema_cloud_epoch_v1'),JSON.stringify(generation));
+ assert.equal(requests.at(-1).payload?.seed,undefined,'restored page does not seed stale snapshot');
  console.log('Profiles client: initial migration, IndexedDB reads, isolation, reload boundary, device secrets, caches, websocket scope, remote settings and failed-switch recovery passed');
 })().catch(error=>{console.error(error);process.exit(1);});

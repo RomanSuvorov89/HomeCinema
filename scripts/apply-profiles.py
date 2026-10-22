@@ -28,7 +28,7 @@ def apply(target, lampainit, ref):
     base=match[1]
     if not re.fullmatch(r'https?://[^\s\x22\x27\\]+',base):raise ValueError('Invalid existing URL')
     names=['kp_sync.py','profiles.py','profiles-client.js.template','kinopoisk.js.template',
-           'client-bootstrap.js.template','install.py','test_profiles.py','facts.py']
+           'client-bootstrap.js.template','install.py','test_profiles.py','facts.py','cloud_disk.py','connections.py','requirements-cloud.txt','test_cloud_disk.py']
     with tempfile.TemporaryDirectory() as temp:
         work=Path(temp)
         for name in names:
@@ -36,22 +36,48 @@ def apply(target, lampainit, ref):
                 'https://raw.githubusercontent.com/RomanSuvorov89/HomeCinema/'+ref+'/server/recommender/'+name,
                 '-o',str(work/name)],check=True)
         patched=original
-        for name in ('card_ratings','Handler'):
+        for name in ('card_ratings','Handler','establish_session','sync','persist_database','refresh_file'):
             old,_=definition(patched,name)
             _,new=definition((work/'kp_sync.py').read_text(),name)
             lines=patched.splitlines(keepends=True)
             patched=''.join(lines[:old.lineno-1])+new+''.join(lines[old.end_lineno:])
+        # New helpers are inserted once; keep installation-specific settings intact.
+        if 'def import_connected_profile(' not in patched:
+            _,helper=definition((work/'kp_sync.py').read_text(),'import_connected_profile')
+            patched=patched.replace('def refresh_file():',helper+'\ndef refresh_file():',1)
+        if '# homecinema-cloud-worker' not in patched:
+            anchor='        ThreadingHTTPServer(("0.0.0.0", 9120), Handler).serve_forever()'
+            if anchor not in patched:raise ValueError('Unsupported server startup')
+            patched=patched.replace(anchor,'''        # homecinema-cloud-worker
+        from cloud_disk import manager
+        from profiles import ensure
+        connection = open_database()
+        try:
+            ensure(connection, PROFILE_ID, PROFILE_DISPLAY_NAME)
+        finally:
+            connection.close()
+        manager(direct_connection, PROFILE_ID, DATA_FILE.parent / 'cloud')
+'''+anchor,1)
         changes={target/'kp_sync.py':patched}
         for name in names[1:]:
             destination=name.removesuffix('.template')
             changes[target/destination]=(work/name).read_text().replace('__RECOMMENDER_PUBLIC_URL__',base)
         docker=(target/'Dockerfile').read_text()
-        for name in ('profiles.py','profiles-client.js','test_profiles.py','facts.py'):
+        for name in ('profiles.py','profiles-client.js','test_profiles.py','facts.py','cloud_disk.py','connections.py','requirements-cloud.txt','test_cloud_disk.py'):
             if not re.search(r'^COPY\s+[^\n]*\b'+re.escape(name)+r'\b',docker,re.M):
                 anchor='WORKDIR /app'
                 if anchor not in docker:raise ValueError('Unsupported Dockerfile')
                 docker=docker.replace(anchor,anchor+'\nCOPY '+name+' /app/'+name,1)
+        if 'pip install --no-cache-dir -r /app/requirements-cloud.txt' not in docker:
+            docker += '\nRUN pip install --no-cache-dir -r /app/requirements-cloud.txt\n'
         changes[target/'Dockerfile']=docker
+        # Keep configured DNS service names; initial defaults must not erase a restored address.
+        defaults_path=target/'client-defaults.js'
+        if defaults_path.is_file():
+            defaults=defaults_path.read_text()
+            defaults=re.sub(r"(?m)^(\s*)storage\.set\('torrserver_(url|use_link)',",
+                lambda match:match[1]+"if (!storage.get('torrserver_"+match[2]+"', '')) storage.set('torrserver_"+match[2]+"',",defaults)
+            changes[defaults_path]=defaults
         ignore=target/'.dockerignore'
         ignore_text=ignore.read_text() if ignore.is_file() else ''
         for pattern in ('data/','__pycache__/','*.before-*','.env'):

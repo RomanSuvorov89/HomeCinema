@@ -895,8 +895,9 @@ def curl_public(url):
     return process.stdout.decode("utf-8", "replace")
 
 
-def establish_session(cookie_file):
-    target = f"{BASE}/votes/list/ord/date/page/1/"
+def establish_session(cookie_file, base=None):
+    base = base or BASE
+    target = f"{base}/votes/list/ord/date/page/1/"
     first = curl(target, cookie_file)
     if "profileFilmsList" in first:
         return first
@@ -941,28 +942,36 @@ def total_count(text):
     return int(match.group(1)) if match else 0
 
 
-def sync():
+def sync(profile_id=None):
+    profile_id = profile_id or PROFILE_ID
+    from connections import read
+    connection = direct_connection()
+    try:
+        public_id = read(connection, profile_id, PROFILE_ID)["kp_id"]
+    finally:
+        connection.close()
+    base = "https://www.kinopoisk.ru/user/" + public_id
     with tempfile.TemporaryDirectory() as directory:
         cookie_file = Path(directory) / "cookies.txt"
-        first = establish_session(cookie_file)
+        first = establish_session(cookie_file, base)
         expected_votes = total_count(first)
         pages = max(1, (expected_votes + 49) // 50)
 
         def parse_votes(page):
-            text = first if page == 1 else curl(f"{BASE}/votes/list/ord/date/page/{page}/", cookie_file, False)
+            text = first if page == 1 else curl(f"{base}/votes/list/ord/date/page/{page}/", cookie_file, False)
             parser = VotesParser()
             parser.feed(text)
             return parser.rows
 
         with ThreadPoolExecutor(max_workers=4) as pool:
             votes = [row for page in pool.map(parse_votes, range(1, pages + 1)) for row in page]
-        first_watch = curl(f"{BASE}/movies/list/type/3575/sort/default/page/1/", cookie_file)
+        first_watch = curl(f"{base}/movies/list/type/3575/sort/default/page/1/", cookie_file)
         expected_watch = total_count(first_watch)
         watch_pages = max(1, (expected_watch + 24) // 25)
 
         def parse_watch(page):
             text = first_watch if page == 1 else curl(
-                f"{BASE}/movies/list/type/3575/sort/default/page/{page}/", cookie_file, False
+                f"{base}/movies/list/type/3575/sort/default/page/{page}/", cookie_file, False
             )
             parser = WatchlistParser()
             parser.feed(text)
@@ -975,7 +984,8 @@ def sync():
     if len(watchlist) != expected_watch:
         raise RuntimeError(f"watchlist completeness check failed: parsed {len(watchlist)}, expected {expected_watch}")
     return {
-        "profile_id": PROFILE_ID,
+        "profile_id": profile_id,
+        "public_profile_id": public_id,
         "updated_at": int(time.time()),
         "ratings_count": len(votes),
         "watchlist_count": len(watchlist),
@@ -1034,6 +1044,8 @@ def open_database():
 
 
 def persist_database(data):
+    profile_id = data.get("profile_id", PROFILE_ID)
+    public_id = data.get("public_profile_id", PROFILE_ID)
     now = int(time.time())
     connection = open_database()
     try:
@@ -1043,16 +1055,16 @@ def persist_database(data):
                    VALUES(?, ?, ?, ?, ?)
                    ON CONFLICT(profile_id) DO UPDATE SET display_name=excluded.display_name,
                      source_url=excluded.source_url, updated_at=excluded.updated_at""",
-                (PROFILE_ID, PROFILE_DISPLAY_NAME, f"https://www.kinopoisk.ru/user/{PROFILE_ID}/", now, now),
+                (profile_id, PROFILE_DISPLAY_NAME, f"https://www.kinopoisk.ru/user/{public_id}/", now, now),
             )
             for rating, (label, utility) in RATING_SCALE.items():
                 connection.execute(
                     """INSERT INTO rating_scale(profile_id, rating, label, utility) VALUES(?, ?, ?, ?)
                        ON CONFLICT(profile_id, rating) DO UPDATE SET label=excluded.label, utility=excluded.utility""",
-                    (PROFILE_ID, rating, label, utility),
+                    (profile_id, rating, label, utility),
                 )
-            connection.execute("DELETE FROM user_ratings WHERE profile_id=?", (PROFILE_ID,))
-            connection.execute("DELETE FROM watchlist WHERE profile_id=?", (PROFILE_ID,))
+            connection.execute("DELETE FROM user_ratings WHERE profile_id=?", (profile_id,))
+            connection.execute("DELETE FROM watchlist WHERE profile_id=?", (profile_id,))
             for item in data["ratings"]:
                 connection.execute(
                     """INSERT INTO media(kp_id, media_type, title, original_title, release_year, kp_rating, kp_vote_count)
@@ -1070,7 +1082,7 @@ def persist_database(data):
                 )
                 connection.execute(
                     "INSERT INTO user_ratings(profile_id,kp_id,rating,rated_at_text,source) VALUES(?,?,?,?, 'kinopoisk')",
-                    (PROFILE_ID, item["kp_id"], item["rating"], item.get("rated_at")),
+                    (profile_id, item["kp_id"], item["rating"], item.get("rated_at")),
                 )
             for item in data["watchlist"]:
                 connection.execute(
@@ -1081,7 +1093,7 @@ def persist_database(data):
                 )
                 connection.execute(
                     "INSERT INTO watchlist(profile_id,kp_id,added_at,source) VALUES(?,?,?,'kinopoisk')",
-                    (PROFILE_ID, item["kp_id"], now),
+                    (profile_id, item["kp_id"], now),
                 )
             connection.execute(
                 """INSERT INTO sync_state(key,value,updated_at) VALUES('kinopoisk_last_sync',?,?)
@@ -1569,13 +1581,32 @@ def run_enrichment():
         connection.close()
 
 
-def refresh_file():
-    data = sync()
+def import_connected_profile(profile):
+    data = sync(profile)
     persist_database(data)
-    DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
-    temporary = DATA_FILE.with_suffix(".tmp")
-    temporary.write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
-    temporary.replace(DATA_FILE)
+    if profile == PROFILE_ID:
+        DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
+        temporary = DATA_FILE.with_suffix(".tmp")
+        temporary.write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+        temporary.replace(DATA_FILE)
+    return data
+
+
+def refresh_file():
+    from connections import IMPORT_LOCK, ensure
+    with IMPORT_LOCK:
+        data = import_connected_profile(PROFILE_ID)
+        connection = direct_connection()
+        try:
+            ensure(connection)
+            others = [r[0] for r in connection.execute("SELECT profile_id FROM home_connections WHERE profile_id<>?", (PROFILE_ID,))]
+        finally:
+            connection.close()
+        for profile in others:
+            try:
+                import_connected_profile(profile)
+            except Exception:
+                print("Connected profile import failed; saved ratings retained", flush=True)
     print(f"updated: ratings={data['ratings_count']} watchlist={data['watchlist_count']}", flush=True)
 
 
@@ -1928,7 +1959,51 @@ class Handler(BaseHTTPRequestHandler):
             self.review_response(404, {'error': str(error)})
             return None
 
+    def cloud_request(self):
+        from cloud_disk import handle
+        return handle(self, direct_connection, PROFILE_ID, DATA_FILE.parent / 'cloud')
+
+    def connected_services(self):
+        if urlparse(self.path).path != '/connections.json':
+            return False
+        from connections import read, ensure, kp_id, start_import
+        from cloud_disk import allowed_origin
+        if not allowed_origin(self):
+            self.review_response(403, {'error': 'Откройте настройки из HomeCinema'})
+            return True
+        connection = direct_connection()
+        try:
+            if self.command == 'GET':
+                profile = parse_qs(urlparse(self.path).query).get('id', [PROFILE_ID])[0]
+                if not connection.execute('SELECT 1 FROM profiles WHERE profile_id=?', (profile,)).fetchone():
+                    raise ValueError('Неизвестный профиль')
+                self.review_response(200, read(connection, profile, PROFILE_ID))
+            else:
+                if self.headers.get('Content-Type', '').split(';')[0] != 'application/json':
+                    raise ValueError('Ожидается JSON')
+                length = int(self.headers.get('Content-Length', '0'))
+                if not 0 < length <= 4096:
+                    raise ValueError('Недопустимый размер запроса')
+                payload = json.loads(self.rfile.read(length))
+                profile = payload.get('profile_id')
+                value = kp_id(payload.get('kp_id'))
+                if not connection.execute('SELECT 1 FROM profiles WHERE profile_id=?', (profile,)).fetchone():
+                    raise ValueError('Неизвестный профиль')
+                ensure(connection)
+                with connection:
+                    connection.execute('INSERT INTO home_connections(profile_id,kp_id) VALUES(?,?) '
+                        'ON CONFLICT(profile_id) DO UPDATE SET kp_id=excluded.kp_id,error=""', (profile, value))
+                start_import(direct_connection, profile, import_connected_profile)
+                self.review_response(200, {'ok': True, 'kp_id': value, 'queued': True})
+        except (ValueError, TypeError):
+            self.review_response(400, {'error': 'Проверьте ID/ссылку Кинопоиска и выбранный профиль'})
+        finally:
+            connection.close()
+        return True
+
     def do_POST(self):
+        if self.cloud_request() or self.connected_services():
+            return
         from profiles import handle
         if handle(self, direct_connection, PROFILE_ID, PROFILE_DISPLAY_NAME):
             return
@@ -1974,6 +2049,8 @@ class Handler(BaseHTTPRequestHandler):
                 connection.close()
 
     def do_GET(self):
+        if self.cloud_request() or self.connected_services():
+            return
         from profiles import handle
         if handle(self, direct_connection, PROFILE_ID, PROFILE_DISPLAY_NAME):
             return
@@ -2168,6 +2245,15 @@ if __name__ == "__main__":
             snapshot_database("before-candidates")
             threading.Thread(target=refresh_loop, daemon=True).start()
             threading.Thread(target=enrichment_loop, daemon=True).start()
+        # homecinema-cloud-worker
+        from cloud_disk import manager
+        from profiles import ensure
+        connection = open_database()
+        try:
+            ensure(connection, PROFILE_ID, PROFILE_DISPLAY_NAME)
+        finally:
+            connection.close()
+        manager(direct_connection, PROFILE_ID, DATA_FILE.parent / 'cloud')
         ThreadingHTTPServer(("0.0.0.0", 9120), Handler).serve_forever()
     else:
         print(json.dumps(sync(), ensure_ascii=False, indent=2))

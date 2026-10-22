@@ -66,7 +66,7 @@
         return new Promise(function (resolve,reject) {
             var xhr=new XMLHttpRequest();
             xhr.open(payload ? 'POST' : 'GET',base+path,true);
-            xhr.timeout=12000;
+            xhr.timeout=path.indexOf('/cloud/')===0?90000:12000;
             if (payload) xhr.setRequestHeader('Content-Type','application/json');
             xhr.onload=function () {
                 var result;
@@ -135,7 +135,7 @@
         busy=true;
         var pending = !seed && !Object.keys(changes).length
             ? request('/profile-state.json?id='+encodeURIComponent(id))
-            : request('/profile-state.json',{profile_id:id,device_id:device(),seed:!!seed,base:baseline,values:changes});
+            : request('/profile-state.json',{profile_id:id,device_id:device(),seed:!!seed,generation:cloudEpoch,base:baseline,values:changes});
         flight = pending
             .then(function (state) {
                 if (!active || active.id !== id) return;
@@ -188,15 +188,140 @@
         });
     }
     function returnHead() {Lampa.Controller.toggle('head');}
+    var cloudTimer=null, cloudEpoch='', cloudDeviceFields=['torrserver_url','torrserver_use_link','torrserver_auth',
+        'torrserver_login','torrserver_password','jackett_url','jackett_key','parser_use','parser_torrent_type',
+        'player_volume','interface_sound_level','video_quality_default','player_normalization','player_subs_shift_time',
+        'subtitles_start','homecinema_appearance','poster_size'];
+    function cloudDeviceSave() {
+        var values={};cloudDeviceFields.forEach(function(key){var value=read(key,'');if(value!=='')values[key]=value;});
+        return request('/cloud/device.json',{device:device(),values:values});
+    }
+    function cloudError(error) {notify(error.message);}
+    function cloudInput(title,done,secret) {
+        if(secret) {
+            // Native Lampa keyboard logs entered text. Secrets use a separate password field.
+            var input=$('<input type="password" class="selector" autocomplete="off" style="width:100%;padding:.7em;font-size:1.2em;box-sizing:border-box">');
+            var submitted=false;
+            function submit(){if(submitted)return;var value=input.val();if(!value)return;submitted=true;input.val('');Lampa.Modal.close();returnHead();done(value);}
+            input.on('hover:enter',function(){input[0].focus();});
+            input.on('keydown',function(event){if(event.keyCode===13){event.preventDefault();submit();}});
+            Lampa.Modal.open({title:title,html:input,size:'medium',select:input,
+                buttons:[{name:'Продолжить',onSelect:submit}],onBack:function(){input.val('');Lampa.Modal.close();returnHead();}});
+            return;
+        }
+        Lampa.Input.edit({title:title,value:'',free:true,nosave:true,nomic:true},function(value){
+            returnHead();if(value)done(value);
+        });
+    }
+    function cloudConnect(status) {
+        function begin(payload) {
+            request('/cloud/connect.json',payload).then(function(data){
+                var content=$('<div style="text-align:center"></div>');
+                $('<img style="width:12em;height:12em;background:white;padding:.5em">').attr('src',base+'/cloud/qr.svg').appendTo(content);
+                $('<div></div>').text('Откройте '+data.verification_url).appendTo(content);
+                $('<div style="font-size:2em;margin:.6em"></div>').text(data.user_code).appendTo(content);
+                $('<div></div>').text('Введите код на странице Яндекса и разрешите доступ к папке приложения.').appendTo(content);
+                var stopped=false,polling=false,expires=Date.now()+data.expires_in*1000;
+                function stop(){stopped=true;clearInterval(cloudTimer);cloudTimer=null;}
+                Lampa.Modal.open({title:'Подключить Яндекс Диск',html:content,size:'medium',onBack:function(){stop();Lampa.Modal.close();returnHead();}});
+                cloudTimer=setInterval(function(){
+                    if(stopped || polling)return;
+                    if(Date.now()>expires){stop();Lampa.Modal.close();notify('Код истёк. Запросите новый.');returnHead();return;}
+                    polling=true;
+                    request('/cloud/poll.json',{}).then(function(result){
+                        if(stopped)return;
+                        if(result.connected){stop();Lampa.Modal.close();notify('Яндекс Диск подключён');cloudMenu();}
+                    }).catch(function(e){stop();Lampa.Modal.close();returnHead();cloudError(e);}).then(function(){polling=false;});
+                },Math.max(5,data.interval)*1000);
+            }).catch(cloudError);
+        }
+        if(status.configured)begin({});
+        else cloudInput('ClientID приложения Яндекса',function(id){
+            cloudInput('Client secret приложения Яндекса',function(secret){begin({client_id:id.trim(),client_secret:secret.trim()});},true);
+        });
+    }
+    function cloudWait() {
+        notify('Сохраняем в облако…');
+        var tries=0;
+        var id=setInterval(function(){
+            request('/cloud/status.json').then(function(status){
+                if(!status.busy){clearInterval(id);notify(status.error || 'Копия сохранена на Яндекс Диске');}
+                else if(++tries>120){clearInterval(id);notify('Операция продолжается; состояние доступно в меню облака');}
+            }).catch(function(e){clearInterval(id);cloudError(e);});
+        },2000);
+    }
+    function cloudVersions() {
+        request('/cloud/versions.json').then(function(data){
+            var items=data.items.map(function(row){return {title:row.modified || row.name,subtitle:Math.ceil(row.size/1024)+' КБ',file:row.name};});
+            if(!items.length){notify('На диске пока нет копий HomeCinema');returnHead();return;}
+            Lampa.Select.show({title:'Выберите копию для восстановления',items:items,onBack:cloudMenu,onSelect:function(item){
+                returnHead();cloudInput('Пароль шифрования этой копии',function(password){
+                    request('/cloud/preview.json',{name:item.file,password:password}).then(function(preview){
+                        Lampa.Select.show({title:'Восстановить '+preview.profiles+' профилей и '+preview.ratings+' оценок?',
+                            items:[{title:'Отмена'},{title:'Восстановить копию',restore:true,subtitle:'Текущие данные заменятся. Локальная резервная копия будет сохранена.'}],
+                            onBack:cloudMenu,onSelect:function(choice){
+                                returnHead();if(!choice.restore)return;
+                                busy=true; // Keep the old browser state out of the restored database.
+                                request('/cloud/restore.json',{ticket:preview.ticket}).then(function(){window.location.reload();},function(e){busy=false;cloudError(e);});
+                            }});
+                    }).catch(cloudError);
+                },true);
+            }});
+        }).catch(cloudError);
+    }
+    function cloudMenu() {
+        request('/cloud/status.json').then(function(status){
+            var items=[];
+            if(!status.connected)items.push({title:'Подключить Яндекс Диск',action:'connect',subtitle:'Нужны ClientID и Client secret своего приложения. Инструкция: docs/CLOUD.md в HomeCinema.'});
+            else {
+                items.push({title:'Восстановить из облачной копии',action:'restore'});
+                if(status.enabled)items.push({title:'Сохранить сейчас',action:'save',subtitle:status.busy?'Операция выполняется':status.error || (status.last_save?'Последняя копия: '+new Date(status.last_save*1000).toLocaleString():'Ожидаем первую копию')});
+                else items.push({title:'Начать новое облачное сохранение',action:'enable',subtitle:'Создаст отдельные копии этого сервера. Старые копии останутся.'});
+                items.push({title:'Переподключить Яндекс Диск',action:'connect'});
+                items.push({title:'Отключить облако',action:'disconnect',subtitle:'Файлы на Яндекс Диске останутся'});
+            }
+            Lampa.Select.show({title:'Облачное сохранение — Яндекс Диск',items:items,onBack:menu,onSelect:function(item){
+                returnHead();
+                if(item.action==='connect')cloudConnect(status);
+                if(item.action==='restore')sync(false).then(cloudVersions).catch(cloudError);
+                if(item.action==='save')sync(false).then(cloudDeviceSave).then(function(){return request('/cloud/save.json',{});}).then(cloudWait).catch(cloudError);
+                if(item.action==='enable')cloudInput('Придумайте пароль копий (от 12 символов). Сохраните его отдельно!',function(password){
+                    cloudInput('Повторите пароль копий',function(repeat){
+                        if(repeat!==password){notify('Пароли не совпадают');return;}
+                        sync(false).then(cloudDeviceSave).then(function(){return request('/cloud/enable.json',{confirm:'new',password:password});}).then(cloudWait).catch(cloudError);
+                    },true);
+                },true);
+                if(item.action==='disconnect')request('/cloud/disconnect.json',{}).then(function(){notify('Облако отключено; копии на диске сохранены');}).catch(cloudError);
+            }});
+        }).catch(cloudError);
+    }
+    function connectedMenu() {
+        request('/connections.json?id='+encodeURIComponent(active.id)).then(function(data){
+            Lampa.Select.show({title:'Кинопоиск — '+active.name,items:[
+                {title:'ID или ссылка на профиль',subtitle:data.kp_id || 'Не подключён',action:'edit'},
+                {title:'Обновить оценки и список «Буду смотреть»',subtitle:data.error || (data.checked_at?'Последняя попытка: '+new Date(data.checked_at*1000).toLocaleString():'Импорт публичного профиля'),action:'refresh'}
+            ],onBack:menu,onSelect:function(item){
+                returnHead();
+                function save(value){request('/connections.json',{profile_id:active.id,kp_id:value}).then(function(){notify('Импорт запущен. Оценки появятся после завершения.');}).catch(cloudError);}
+                if(item.action==='edit')cloudInput('ID или ссылка на публичный профиль Кинопоиска',save);
+                else if(data.kp_id)save(data.kp_id);
+            }});
+        }).catch(cloudError);
+    }
+
     function menu() {
         if (!active) {connect();return;}
         var items=profiles.map(function (profile) {return {title:profile.name,subtitle:profile.id===active.id ? 'Текущий профиль' : '',profile:profile};});
+        items.push({title:'Облачное сохранение',action:'cloud'});
+        items.push({title:'Подключённые сервисы — Кинопоиск',action:'connections'});
         items.push({title:'Добавить профиль',action:'create'});
         items.push({title:'Переименовать текущий профиль',action:'rename'});
         items.push({title:'Сохранить профиль сейчас',action:'save',subtitle:errorText || 'История и личные настройки сохраняются автоматически'});
         if(conflict) {items.push({title:'Восстановить настройки с сервера',action:'remote'});items.push({title:'Сохранить мои настройки вместо серверных',action:'local'});}
         Lampa.Select.show({title:'Кто смотрит?',items:items,onBack:returnHead,onSelect:function (item) {
             returnHead();
+            if(item.action==='cloud')cloudMenu();
+            if(item.action==='connections')connectedMenu();
             if (item.action==='remote' || item.action==='local') resolveSettings(item.action==='local').catch(function(e) {notify(e.message);});
             if (item.profile) switchTo(item.profile).catch(function (e) {notify(e.message);});
             if (item.action==='save') sync(false).then(function () {notify('Профиль сохранён');},function (e) {notify(e.message);});
@@ -302,12 +427,23 @@
             profiles=data.profiles;owner=data.owner_id;
             persist('homecinema_profile_manifest_v1',data);
             var local=stored('homecinema_active_profile_v1',null);
-            var selected=profiles.filter(function (p) {return p.id === (local && local.id || owner);})[0];
+            var selected=profiles.filter(function (p) {return p.id === (local && local.id || owner);})[0] || profiles.filter(function(p){return p.id===owner;})[0];
             if (!selected) throw new Error('Сохранённый профиль отсутствует на сервере');
             setActive(selected);
             baseline=stored(baseKey(active.id),{});
+            cloudEpoch=data.generation || '';
+            if(cloudEpoch!==stored('homecinema_cloud_epoch_v1','')) {
+                return request('/profile-state.json?id='+encodeURIComponent(active.id)).then(function(state){
+                    apply(state.values);clearCaches();baseline=clone(state.values);
+                    persist(baseKey(active.id),baseline);persist(migratedKey(active.id),true);
+                    return request('/cloud/device-restore.json',{device:device()});
+                }).then(function(result){
+                    Object.keys(result.values).forEach(function(key){if(cloudDeviceFields.indexOf(key)>=0)write(key,result.values[key]);});
+                    persist('homecinema_cloud_epoch_v1',cloudEpoch);
+                });
+            }
             return sync(!stored(migratedKey(active.id),false));
-        }).then(function () {finish();pollNotices();},function (error) {
+        }).then(function () {finish();pollNotices();request('/cloud/status.json').then(function(status){if(status.connected)cloudDeviceSave().catch(function(){});}).catch(function(){});},function (error) {
             errorText=error.message;
             notify(error.message);
             finish();
@@ -340,6 +476,7 @@
                 });
                 write('online_watched_last',last);
             }
+            if(cloudDeviceFields.indexOf(e.name)>=0 && ready)request('/cloud/status.json').then(function(status){if(status.connected)cloudDeviceSave().catch(function(){});}).catch(function(){});
             if (fields.indexOf(e.name)>=0 && ready && !busy) sync(false).catch(function () {refreshBadge();});
         });
         document.addEventListener('visibilitychange',function () {

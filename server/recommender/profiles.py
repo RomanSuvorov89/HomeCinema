@@ -42,10 +42,18 @@ def ensure(c, owner, label):
         c.execute('INSERT OR IGNORE INTO home_profiles VALUES(?,?,?)', (owner, now, current_label or 'Основной'))
 
 
+def generation(c):
+    try:
+        row = c.execute("SELECT epoch FROM home_restore_meta LIMIT 1").fetchone()
+        return row[0] if row else ""
+    except Exception:
+        return ""
+
+
 def listing(c, owner):
     rows = c.execute('''SELECT p.profile_id,h.display_name FROM profiles p
         JOIN home_profiles h USING(profile_id) ORDER BY h.created_at,p.profile_id''').fetchall()
-    return {'owner_id': owner, 'profiles': [
+    return {'owner_id': owner, 'generation': generation(c), 'profiles': [
         {'id': r[0], 'name': r[1], 'owner': r[0] == owner,
          'lampac_profile_id': '' if r[0] == owner else r[0]} for r in rows]}
 
@@ -70,7 +78,7 @@ def create(c, payload):
 
 def state(c, profile):
     row = c.execute('SELECT revision,document FROM home_profile_state WHERE profile_id=?', (profile,)).fetchone()
-    return {'profile_id': profile, 'revision': row[0] if row else 0,
+    return {'profile_id': profile, 'generation': generation(c), 'revision': row[0] if row else 0,
             'values': json.loads(row[1]) if row else {}}
 
 
@@ -167,6 +175,8 @@ def save_state(c, profile, payload):
     # Serialize compare/merge/write across HTTP request threads.
     c.execute('BEGIN IMMEDIATE')
     try:
+        if generation(c) != payload.get('generation', ''):
+            raise Conflict('На сервере восстановлена облачная копия. Обновите страницу перед сохранением.')
         current = state(c, profile)
         merged = copy.deepcopy(current['values'])
         c.execute('INSERT OR IGNORE INTO home_profile_backups(profile_id,device_id,document,created_at) VALUES(?,?,?,?)',
@@ -181,7 +191,7 @@ def save_state(c, profile, payload):
         c.execute('INSERT OR REPLACE INTO home_profile_state VALUES(?,?,?,?)',
                   (profile, revision, json.dumps(merged, ensure_ascii=False), int(time.time())))
         c.commit()
-        return {'profile_id': profile, 'revision': revision, 'values': merged, 'ok': True}
+        return {'profile_id': profile, 'revision': revision, 'values': merged, 'generation': generation(c), 'ok': True}
     except Exception:
         c.rollback()
         raise

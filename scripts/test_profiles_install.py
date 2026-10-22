@@ -36,6 +36,11 @@ class InstallerTest(unittest.TestCase):
                 backup=module.apply(target,mounted,'a'*40)
             self.assertIn('"987654"',server.read_text());self.assertIn('CUSTOM_FLAG=True',server.read_text())
             self.assertIn('http://custom.test:29120', (target/'profiles-client.js').read_text())
+            self.assertTrue((target/'cloud_disk.py').is_file())
+            self.assertIn('requirements-cloud.txt',(target/'Dockerfile').read_text())
+            self.assertIn("if (!storage.get('torrserver_url', ''))",(target/'client-defaults.js').read_text())
+            self.assertEqual(server.read_text().count('def import_connected_profile('),1)
+            self.assertIn('# homecinema-cloud-worker',server.read_text())
             self.assertEqual(mounted.read_text(),original);self.assertEqual(mounted.stat().st_ino,inode)
             with sqlite3.connect(backup/'database-TimeCode.sql') as c:
                 self.assertEqual(c.execute('SELECT item FROM timecodes').fetchone()[0],'keep')
