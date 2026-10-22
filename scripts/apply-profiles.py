@@ -28,7 +28,7 @@ def apply(target, lampainit, ref):
     base=match[1]
     if not re.fullmatch(r'https?://[^\s\x22\x27\\]+',base):raise ValueError('Invalid existing URL')
     names=['kp_sync.py','profiles.py','profiles-client.js.template','kinopoisk.js.template',
-           'client-bootstrap.js.template','install.py','test_profiles.py','facts.py','cloud_disk.py','connections.py','requirements-cloud.txt','test_cloud_disk.py']
+           'client-bootstrap.js.template','install.py','test_profiles.py','facts.py','cloud_disk.py','connections.py','requirements-cloud.txt','test_cloud_disk.py','home_cache.py','review_api.py']
     with tempfile.TemporaryDirectory() as temp:
         work=Path(temp)
         for name in names:
@@ -36,7 +36,7 @@ def apply(target, lampainit, ref):
                 'https://raw.githubusercontent.com/RomanSuvorov89/HomeCinema/'+ref+'/server/recommender/'+name,
                 '-o',str(work/name)],check=True)
         patched=original
-        for name in ('card_ratings','Handler','establish_session','sync','persist_database','refresh_file','refresh_loop'):
+        for name in ('card_ratings','Handler','establish_session','sync','persist_database','refresh_file','refresh_loop','home_personal_data'):
             old,_=definition(patched,name)
             _,new=definition((work/'kp_sync.py').read_text(),name)
             lines=patched.splitlines(keepends=True)

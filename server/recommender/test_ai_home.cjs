@@ -1,7 +1,7 @@
 const fs=require('fs'),vm=require('vm'),assert=require('assert');
 const source=fs.readFileSync('kinopoisk.js','utf8');
 const filters=source.slice(source.indexOf('  var homeFeedbackRevision'),source.indexOf('  function openReviewList('));
-const code=source.slice(source.indexOf('  function filterReleaseCards('),source.indexOf('  var data = null;'));
+const code=source.slice(source.indexOf('  function sameHomeCard('),source.indexOf('  var data = null;'));
 const upstream=fs.readFileSync('tests/fixtures/lampa-home-upstream.js','utf8');
 async function run(fail=false) {
  let pushed,opened=0,requestCount=0; const persisted={};
@@ -22,6 +22,7 @@ async function run(fail=false) {
   get(url,params,done){requestCount++;setTimeout(()=>done({url,results:[{id:url,release_quality:'WEBRip'},{id:'bad',release_quality:'TS'}]}),url.includes('fire')?12:1);},
   trailers(type,done){setTimeout(()=>done({title:'Трейлеры - Новинки',results:[{id:300}]}),2);},
   rows:[{screen:'main',name:'resume',index:8,call(){return cb=>setTimeout(()=>cb({title:'Продолжить просмотр',results:[{id:101}]}),20);}},
+    {screen:'main',name:'remote_collection',index:10,call(){const label='TV Series I Have Seen 8';return cb=>cb({title:label,results:[{id:404}]});}},
     {screen:'main',name:'recommend',index:0,call(){return cb=>cb({title:'Рекомендуем посмотреть',results:[{id:102}]});}}],
   Progress:class {append(p){this.p=p;} start(done){Promise.all(this.p.map(p=>new Promise(resolve=>p(resolve)))).then(done);}},
   Lampa:{Lang:{translate(k){return titles[k]||k;}},Activity:{push(p){pushed=p;}},Api:{sources:{cub:{}}}}
@@ -29,7 +30,7 @@ async function run(fail=false) {
  const snapshot={rows:[
   {kind:'continue',title:'Продолжить просмотр',results:[{id:101},{id:999,title:'Rated airing',media_type:'tv',roman_review:{kp_id:999,my_rating:8,continue_reason:'rated_airing'}}]},
   {kind:'ai',title:'Рекомендация AI',results:[{id:1,title:'AI',media_type:'movie',roman_review:{kp_id:1}}]},
-  {kind:'archive',title:'Из прошлых лет — для тебя',results:[{id:2,title:'Old'}]},
+  {kind:'archive',title:'Из прошлых лет',results:[{id:2,title:'Old'}]},
   {kind:'watch',title:'Буду смотреть',results:[{id:3,title:'Watch'}]}]};
  ctx.Lampa.Reguest=class {timeout(){} silent(url,done,error){assert(url.endsWith('/home.json'));setTimeout(()=>fail?error():done(snapshot),1);}};
  ctx.Lampa.Storage={get:(k,d)=>persisted[k] || d,set:(k,v)=>{persisted[k]=JSON.parse(JSON.stringify(v));}};
@@ -42,12 +43,13 @@ async function run(fail=false) {
  let more;
  const first=await new Promise((resolve,reject)=>{more=ctx.Lampa.Api.sources.cub.main({},resolve,reject);});
  const expected=fail?['Продолжить просмотр','Огонь!','Сейчас смотрят']:
-  ['Продолжить просмотр','Рекомендация AI','Огонь!','Сейчас смотрят — для тебя','Из прошлых лет — для тебя','Буду смотреть'];
+  ['Продолжить просмотр','Рекомендация AI','Огонь!','Сейчас смотрят','Из прошлых лет','Буду смотреть'];
  // Native pagination may put the sixth priority row into the second batch.
  assert(!first.some(r=>/Трейлер|Последнее|высоком/.test(r.title)));
  assert(first.every(r=>r.results.every(c=>c.release_quality!=='TS')));
  let all=first.slice();for(let i=0;i<20;i++){const batch=await new Promise(resolve=>more(resolve,()=>resolve(null)));if(!batch)break;all=all.concat(batch);}
  assert.deepEqual(Array.from(all.slice(0,expected.length),r=>r.title),expected.filter(t=>t!=='Рекомендуем посмотреть'));
+ assert(!all.some(r=>/TV Series I Have Seen/.test(r.title)),'remove remote collection rows from every page');
  assert.equal(all.filter(r=>r.title==='Огонь!').length,1);
  if(!fail){const resume=all.find(r=>r.title==='Продолжить просмотр');assert.deepEqual(Array.from(resume.results,c=>c.id),[101,999]);}
  assert.equal(all.filter(r=>r.title==='Буду смотреть').length,fail?0:1);
@@ -84,7 +86,7 @@ async function run(fail=false) {
  }
  ctx.Lampa.Activity.push({url:'roman-ai://archive'});assert.equal(pushed.review_period,'archive');
  ctx.Lampa.Activity.push({url:'roman-kp://watchlist'});assert.equal(pushed.component,'watch');
- for(const title of ['Трейлеры - Новинки','Трейлеры — Новинки','#{title_trailers} - Новинки','UHD']) assert(ctx.hiddenHomeRow({title}));
+ for(const title of ['Трейлеры - Новинки','Трейлеры — Новинки','#{title_trailers} - Новинки','UHD','TV Series I Have Seen 8','TV Series I Have Seen 4']) assert(ctx.hiddenHomeRow({title}));
  assert.equal(ctx.filterReleaseCards(['TS','HDTS','CAMRip','HDCAM','TC','DVDSCR','WEB-DL','WEBRip','BDRip','4K',''].map(quality=>({quality}))).length,5);
 }
 (async()=>{await run();await run(true);console.log('CUB: order, trailers, pagination; warm AND empty cache with stalled requests: first Continue Watching <250ms; late rows retained: passed');})().catch(e=>{console.error(e);process.exitCode=1;});

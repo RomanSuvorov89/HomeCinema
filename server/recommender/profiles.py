@@ -100,6 +100,10 @@ def union(a, b):
 
 def seed_history(remote, local, key=''):
     if isinstance(remote, dict) and isinstance(local, dict):
+        if key == 'torrents_filter_data':
+            # First import from an old device must not combine another device's
+            # season selections or treat a season filter array as episode progress.
+            return {**copy.deepcopy(local), **copy.deepcopy(remote)}
         # Timeline records have their own clock; progress must not go backwards on an old TV.
         for clock in ('updated', '_hc_updated'):
             if clock in remote and clock in local:
@@ -204,6 +208,17 @@ def catalog_data(c, profile):
                          + ' u USING(kp_id) WHERE u.profile_id=?', (profile,)).fetchall()
         result[key] = [dict(r) for r in rows]
         result[key + '_count'] = len(rows)
+    feedback='recommendation_feedback' if c.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='recommendation_feedback'").fetchone() else (
+        '(SELECT NULL AS profile_id,NULL AS kp_id,NULL AS status WHERE 0)')
+    rows=c.execute(f"""SELECT m.*,m.release_year AS year FROM media m
+        WHERE (EXISTS(SELECT 1 FROM watchlist w WHERE w.profile_id=? AND w.kp_id=m.kp_id)
+          OR EXISTS(SELECT 1 FROM {feedback} f WHERE f.profile_id=? AND f.kp_id=m.kp_id AND f.status='want'))
+        AND NOT EXISTS(SELECT 1 FROM user_ratings r WHERE r.profile_id=? AND r.kp_id=m.kp_id)
+        AND NOT EXISTS(SELECT 1 FROM {feedback} f WHERE f.profile_id=? AND f.kp_id=m.kp_id AND f.status IN ('seen','not_interested'))
+        ORDER BY m.kp_id""",(profile,profile,profile,profile)).fetchall()
+    result['watchlist']=[dict(row) for row in rows]
+    result['watchlist_count']=len(rows)
     return result
 
 

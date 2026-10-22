@@ -1879,7 +1879,8 @@ def home_personal_data():
         items = review_data(connection, PROFILE_ID, report)["items"]
         if not DATA_FILE.exists():
             raise ValueError("Kinopoisk profile not ready")
-        watch = json.loads(DATA_FILE.read_text(encoding="utf-8")).get("watchlist", [])
+        from profiles import catalog_data
+        watch = catalog_data(connection, PROFILE_ID)["watchlist"]
         from episode_schedule import refresh
         from home_cache import config
         schedule_cookie=DATA_FILE.parent / 'episode-cookies.txt'

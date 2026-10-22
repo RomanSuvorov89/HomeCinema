@@ -159,6 +159,7 @@ done
 trap - EXIT
 
 python3 "$ROOT/scripts/render.py"
+"${COMPOSE[@]}" --env-file "$ROOT/.runtime.env" -f "$ROOT/docker-compose.yml" pull torrserver
 "${COMPOSE[@]}" --env-file "$ROOT/.runtime.env" -f "$ROOT/docker-compose.yml" up -d --build
 
 echo "Waiting for services..."

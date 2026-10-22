@@ -49,7 +49,7 @@ CREATE TABLE IF NOT EXISTS worker_status (
  name TEXT PRIMARY KEY, checked_at INTEGER NOT NULL, error TEXT NOT NULL);
 """
 KINDS = {'continue': 'Продолжить просмотр', 'ai': 'Рекомендация AI', 'fire': 'Огонь!', 'now': 'Сейчас смотрят',
-         'archive': 'Из прошлых лет — для тебя', 'watch': 'Буду смотреть'}
+         'archive': 'Из прошлых лет', 'watch': 'Буду смотреть'}
 
 class Cache:
     def __init__(self, path):
@@ -257,7 +257,7 @@ class Builder:
         allowed.sort(key=lambda i: (-float(i.get('final_score') or 0),i['kp_id']))
         self.group('ai',[i for i in allowed if current-4 <= int(i.get('release_year') or 0) <= current])
         self.group('archive',[i for i in allowed if 0 < int(i.get('release_year') or 0) < current-4])
-        self.group('watch',watch)
+        self.group('watch',[i for i in watch if str(i['kp_id']) not in excluded])
         self.group('continue',airing)
         # Publish existing mappings immediately. Resolve only missing/expired identities,
         # independently of browser requests, then publish each completed batch.

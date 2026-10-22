@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Stop writers while archiving SQLite, including WAL sidecars; restore prior running services.
 set -euo pipefail
+umask 077
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DESTINATION="${1:-$ROOT/backups}"
 mkdir -p "$DESTINATION"

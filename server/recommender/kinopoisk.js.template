@@ -327,6 +327,9 @@
         .then(function (result) {
           item.feedback = result.status;
           rememberHidden(item.kp_id, result.status);
+          data=null;
+          if(result.status==='want' && Lampa.Favorite && typeof Lampa.Favorite.add==='function')
+            Lampa.Favorite.add('wath',event.data.movie);
           Array.prototype.forEach.call(document.querySelectorAll('.card'), function (element) {
             var found = reviewForCard(element.card_data);
             if (found && found.kp_id === item.kp_id) markReview(element, item);
@@ -355,6 +358,109 @@
 
   // Scope the replacement to CUB home responses, including subsequent row batches.
   // A failed personal service leaves the original CUB rows usable.
+  function sameHomeCard(a,b) {
+    var ak=a.kinopoisk_id || a.kp_id || (a.roman_review && a.roman_review.kp_id);
+    var bk=b.kinopoisk_id || b.kp_id || (b.roman_review && b.roman_review.kp_id);
+    if(ak && bk) return String(ak)===String(bk);
+    function type(c){return c.media_type || (c.original_name || c.first_air_date || c.name ? 'tv':'movie');}
+    return a.id != null && b.id != null && String(a.id)===String(b.id) && type(a)===type(b) &&
+      (a.source || 'cub')===(b.source || 'cub');
+  }
+
+  function nativeFavorite(type) {
+    if(!Lampa.Favorite || typeof Lampa.Favorite.get!=='function') return [];
+    return Lampa.Favorite.get({type:type}) || [];
+  }
+
+  function combinedWatchCards(cards, catalog) {
+    catalog=catalog || (typeof data!=='undefined' && data) || {};
+    var planned=nativeFavorite('wath').concat(nativeFavorite('scheduled'));
+    var viewed=nativeFavorite('viewed'), rated=catalog.ratings || [];
+    var result=[];
+    (cards || []).concat(planned).forEach(function(card) {
+      var review=reviewForCard(card) || {}, cached=cacheGet(ratingKey(card)) || {};
+      if(Number(review.my_rating || cached.my_rating || card.my_rating ||
+          (card.roman_review && card.roman_review.my_rating))>0) return;
+      if(rated.some(function(item){return sameHomeCard(card,item);}) ||
+          viewed.some(function(item){return sameHomeCard(card,item);})) return;
+      if(review.feedback==='seen' || review.feedback==='not_interested') return;
+      var tv=card.media_type==='tv' || card.original_name || card.first_air_date || card.name;
+      if(!tv && Lampa.Timeline && typeof Lampa.Timeline.watched==='function') {
+        var progress=Lampa.Timeline.watched(card,true);
+        if(progress && Number(progress.percent)>=90) return;
+      }
+      if(!result.some(function(old){return sameHomeCard(old,card);})) result.push(card);
+    });
+    return filterReleaseCards(result);
+  }
+
+  function lastHomeEpisode(card) {
+    if(!(card.original_name || card.first_air_date || card.media_type==='tv')) return null;
+    var last=Lampa.Storage.get('online_watched_last',{});
+    var title=card.original_name || card.original_title;
+    var entry=title && last[Lampa.Utils.hash(title)];
+    return entry && Number(entry.season)>0 && Number(entry.episode)>0 ? entry : null;
+  }
+
+  function drawLastHomeEpisode(element) {
+    var card=element && element.card_data, last=card && lastHomeEpisode(card);
+    if(!element || !element.querySelector) return;
+    var old=element.querySelector('.homecinema-last-episode');
+    if(!last) {element.classList.remove('homecinema-known-episode');if(old)old.remove();return;}
+    element.classList.add('homecinema-known-episode');
+    var text='Сезон '+last.season+' · Серия '+last.episode;
+    if(old && old.textContent===text) return;
+    if(!old) {
+      var view=element.querySelector('.card__view');if(!view)return;
+      old=document.createElement('div');old.className='homecinema-last-episode';view.appendChild(old);
+    }
+    old.textContent=text;
+  }
+
+  function installHomeNavigation() {
+    if(window.homecinemaNavigationV1) return;
+    window.homecinemaNavigationV1=true;
+    var style=document.createElement('style');
+    style.textContent='.head .full--screen{display:none!important}'+
+      'body.homecinema-main .head__backward,body.homecinema-main .head__title{display:none!important}'+
+      '.homecinema-known-episode .card-watched{display:none!important}'+
+      '.homecinema-last-episode{position:absolute;bottom:.45em;left:.45em;right:.45em;padding:.5em .4em;'+
+      'border-radius:.7em;background:rgba(10,12,18,.82);color:#fff;font-size:.7em;line-height:1.35;pointer-events:none}';
+    document.head.appendChild(style);
+    function updateHeader() {
+      var active=Lampa.Activity.active();
+      document.body.classList.toggle('homecinema-main',!!active && active.component==='main');
+    }
+    if(Lampa.Listener) Lampa.Listener.follow('activity',updateHeader);
+    updateHeader();
+    if(Lampa.Storage.listener) Lampa.Storage.listener.follow('change',function(e) {
+      if(e.name==='online_watched_last') Array.prototype.forEach.call(document.querySelectorAll('.card'),drawLastHomeEpisode);
+    });
+    // Native fallback includes the previous show's season. Only per-card values
+    // created with the corrected policy may carry a season; migrate old filters once.
+    var Native=Lampa.Component.get && Lampa.Component.get('torrents');
+    if(typeof Native==='function' && !Native.homecinemaScopedSeason) {
+      function Scoped(object) {
+        var instance=new Native(object), get=instance.getFilterData, set=instance.setFilterData;
+        if(typeof get==='function' && typeof set==='function') {
+          instance.getFilterData=function() {
+            var all=Lampa.Storage.get('torrents_filter_data',{}) || {};
+            var saved=all[instance.cardID()];
+            var filter=Object.assign({},get.call(instance));
+            if(!saved || !saved.homecinema_scoped_season) delete filter.season;
+            return filter;
+          };
+          instance.setFilterData=function(filter) {
+            return set.call(instance,Object.assign({},filter,{homecinema_scoped_season:true}));
+          };
+        }
+        return instance;
+      }
+      Scoped.prototype=Native.prototype;Scoped.homecinemaScopedSeason=true;
+      Lampa.Component.add('torrents',Scoped);
+    }
+  }
+
   function filterReleaseCards(cards) {
     return (cards || []).filter(function (card) {
       var quality = String(card.release_quality || card.quality || '').toUpperCase();
@@ -369,6 +475,7 @@
     }).trim().toLowerCase();
     var route=String(row.url || row.name || '').toLowerCase();
     function label(key) {return String(Lampa.Lang.translate(key)).toLowerCase();}
+    if (/tv\s+series\s+i\s+(?:have|gave)\s+seen|movies?\s+i\s+have\s+seen/i.test(title)) return 'hidden';
     if (/трейлер|trailer/.test(title+' '+route) || title.indexOf(label('title_trailers'))===0) return 'hidden';
     if (title===label('title_latest') || title===label('title_in_high_quality') ||
         /^(последни[ее] добавлен|последнее добавление|в высоком качестве|uhd\b)/.test(title) ||
@@ -412,7 +519,7 @@
   }
 
   function openNowShelf() {
-    Lampa.Activity.push({url:'roman-home://now',title:'Сейчас смотрят — для тебя',component:SHELF_COMPONENT,page:1});
+    Lampa.Activity.push({url:'roman-home://now',title:'Сейчас смотрят',component:SHELF_COMPONENT,page:1});
   }
 
   function shelfComponent(object) {
@@ -550,6 +657,7 @@
             if(/^(continue|ai|archive|now)$/.test(row.kind)) row.results=hiddenHomeCards(row.results);
             if(row.kind==='continue') {row.url='continue';row.source='cub';row.page=1;}
             if(row.kind==='watch') {
+              row.results=combinedWatchCards(row.results);
               row.url='roman-kp://watchlist';row.source='cub';row.page=1;row.total_pages=2;
               row.params={emit:{onlyMore:openWatchlist}};
             }
@@ -565,7 +673,7 @@
     // Covers older Lampa versions that use Activity rather than onlyMore.
     var push = Lampa.Activity.push;
     Lampa.Activity.push = function (params) {
-      if(params && params.url==='roman-home://now') params=Object.assign({},params,{url:'',title:'Сейчас смотрят — для тебя',component:SHELF_COMPONENT,page:1});
+      if(params && params.url==='roman-home://now') params=Object.assign({},params,{url:'',title:'Сейчас смотрят',component:SHELF_COMPONENT,page:1});
       if(params && params.url==='roman-kp://watchlist') {
         params=Object.assign({},params,{url:'',title:'Буду смотреть',component:COMPONENT,page:1});
       }
@@ -593,6 +701,7 @@
       if(/^(continue|ai|archive|now)$/.test(key)) row.results=hiddenHomeCards(row.results);
       if(key==='ai' || key==='archive') row.params={emit:{onlyMore:function(){openReviewList(key==='ai'?'recent':'archive');}}};
       if(key==='now' && row.url==='roman-home://now') row.params={emit:{onlyMore:openNowShelf}};
+      if(key==='watch') row.results=combinedWatchCards(row.results);
       if(key==='watch') row.params={emit:{onlyMore:openWatchlist}};
       return row;
     }
@@ -622,6 +731,7 @@
     }
     function taskKind(task) {
       var text=Function.prototype.toString.call(task);
+      if(/TV Series I (?:Have|Gave) Seen/i.test(text)) return 'hidden';
       if(/title_trailers|\btrailers\s*\(|sort=latest|title_latest|title_in_high_quality|uhd=true/.test(text)) return 'hidden';
       if(/title_continue|continue_watch|Продолжить просмотр/.test(text)) return 'continue';
       if(/title_fire|top\/fire\/|Огонь!/.test(text)) return 'fire';
@@ -642,8 +752,9 @@
     function watchTask(callback) {
       cachedTask('watch',function(done) {
         loadPreview().then(function(rows) {
-          if(!Array.isArray(rows)) return done(null);
-          done(rows.find(function(row){return row.kind==='watch';}) || null);
+          if(!Array.isArray(rows)) return done({title:'Буду смотреть',kind:'watch',url:'roman-kp://watchlist',results:combinedWatchCards([])});
+          var row=rows.find(function(row){return row.kind==='watch';}) || {title:'Буду смотреть',kind:'watch',url:'roman-kp://watchlist',results:[]};
+          done(Object.assign({},row,{results:combinedWatchCards(row.results)}));
         },function(){done(null);});
       },callback);
     }
@@ -751,8 +862,12 @@
       function normalize(rows) {
         return orderHomeRows(rows).map(function(row) {
           row=Object.assign({},row,{results:filterReleaseCards(row.results)});
+          var kind=homeRowKind(row);
+          if(kind==='archive') row.title='Из прошлых лет';
+          if(kind==='watch') row.results=combinedWatchCards(row.results);
           if(homeRowKind(row)==='now') {
-            if(!row.results.some(function(c){return c.roman_review;})) row.results=personalizeNow(row.results);row.title=Object.keys(reviewItems).length?'Сейчас смотрят — для тебя':'Сейчас смотрят';
+            if(!row.results.some(function(c){return c.roman_review;})) row.results=personalizeNow(row.results);
+            row.title='Сейчас смотрят';
           }
           return row;
         }).filter(function(row){return row.results.length;});
@@ -906,8 +1021,9 @@
       var self = this;
       loadData(function (json) {
         resolveAll(json.watchlist || [], function (cards) {
+          cards=combinedWatchCards(cards,json);
           self.build({
-            results: filterReleaseCards(cards),
+            results: cards,
             page: 1,
             total_pages: 1,
             total_results: cards.length,
@@ -925,7 +1041,7 @@
   function openWatchlist() {
     Lampa.Activity.push({
       url: '',
-      title: 'Кинопоиск: Буду смотреть',
+      title: 'Буду смотреть',
       component: COMPONENT,
       page: 1
     });
@@ -1145,6 +1261,7 @@
   }
 
   function processCard(element) {
+    drawLastHomeEpisode(element);
     if (element && element.card_data) {
       var review = reviewForCard(element.card_data);
       if (review) {
@@ -1186,6 +1303,8 @@
     scanCards(document.body);
     var observer = new MutationObserver(function (mutations) {
       mutations.forEach(function (mutation) {
+        var host=mutation.target && mutation.target.closest && mutation.target.closest('.card');
+        if(host) drawLastHomeEpisode(host);
         Array.prototype.forEach.call(mutation.addedNodes || [], scanCards);
       });
     });
@@ -1308,6 +1427,7 @@
   function start() {
     if (window.romanKinopoiskStarted) return;
     installHomeUiPolish();
+    installHomeNavigation();
     installTailLoading();
     Lampa.Component.add(COMPONENT, component);
     Lampa.Component.add(REVIEW_COMPONENT, reviewComponent);

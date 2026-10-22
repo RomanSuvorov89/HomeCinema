@@ -54,11 +54,24 @@ class ReviewTests(unittest.TestCase):
         review_api.save_feedback(c,'owner',{'kp_id':42,'status':'not_interested'})
         result=review_api.home_snapshot(c,FakeCache(),'owner')
         self.assertEqual(result['hidden_ids'],['42'])
-        self.assertEqual([len(r['results']) for r in result['rows']],[1,1,1,2])
+        self.assertEqual([len(r['results']) for r in result['rows']],[1,1,1,1])
         self.assertEqual(len(review_api.home_snapshot(c,FakeCache(),'other')['rows'][0]['results']),2)
         review_api.save_feedback(c,'owner',{'kp_id':42,'status':'clear'})
         self.assertEqual(len(review_api.home_snapshot(c,FakeCache(),'owner')['rows'][0]['results']),2)
         self.assertEqual(c.execute('SELECT rating FROM user_ratings').fetchone()[0],7)
+        c.close()
+
+    def test_watch_snapshot_and_catalog_are_read_only_without_feedback_schema(self):
+        import profiles
+        c=self.connect()
+        c.execute("INSERT INTO watchlist(profile_id,kp_id,source) VALUES('owner',42,'kinopoisk')")
+        c.commit()
+        class Cache:
+            def snapshot(self,profile):return {'rows':[{'kind':'watch','results':[{'kinopoisk_id':'42'}]}]}
+        c.set_authorizer(lambda action,*args: sqlite3.SQLITE_OK if action in (
+            sqlite3.SQLITE_SELECT,sqlite3.SQLITE_READ,sqlite3.SQLITE_FUNCTION) else sqlite3.SQLITE_DENY)
+        self.assertEqual(review_api.home_snapshot(c,Cache(),'owner')['rows'][0]['results'],[])
+        self.assertEqual(profiles.catalog_data(c,'owner')['watchlist'],[])
         c.close()
 
     def test_actual_http_save_and_read_and_validation(self):

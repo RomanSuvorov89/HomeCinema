@@ -4,9 +4,9 @@
 
 Репозиторий хранит исходники и команды для восстановления системы после переезда. **Версия 0.3.0 — preview:** отдельные исправления проверены на действующей установке; полная установка этого объединённого комплекта на чистую машину ещё требует проверки. Рабочую систему сейчас переустанавливать не нужно.
 
-## Установка одной командой
+## Установка и обновление одной командой
 
-На новом Debian/Ubuntu или Arch/CachyOS с systemd:
+На новом или уже настроенном Debian/Ubuntu или Arch/CachyOS с systemd:
 
 ```sh
 bash -c 'f=$(mktemp) && curl -fSL https://raw.githubusercontent.com/RomanSuvorov89/HomeCinema/main/install.sh -o "$f" && bash "$f"; r=$?; test -z "${f:-}" || rm -f "$f"; exit "$r"'
@@ -67,15 +67,9 @@ bash server/backup.sh /path/to/external-disk/homecinema
 
 ## Обновление и диагностика
 
-Перед обновлением сделайте резервную копию. Затем:
+Для установки через корневой установщик повторно выполните **ту же команду из раздела выше**: она скачает актуальный код, сделает локальный backup и обновит сервисы с сохранением настроек. [Пути, прежние отдельные сервисы и откат](docs/ONE_COMMAND.md).
 
-```sh
-git pull --ff-only
-bash server/update.sh
-bash server/healthcheck.sh
-docker compose --env-file server/.runtime.env -f server/docker-compose.yml ps
-docker compose --env-file server/.runtime.env -f server/docker-compose.yml logs --tail 100
-```
+Для ручного checkout по-прежнему можно использовать `git pull --ff-only` и `bash server/update.sh`, предварительно выполнив `bash server/backup.sh`.
 
 Обновление пересобирает плагины из шаблонов, сохраняет прежний `lampainit.js` и не удаляет базы. После него полностью перезапустите Lampa на ТВ; в браузере нажмите Ctrl+F5. Образы Lampac и TorrServer используют `latest`; перед переездом сохраняйте фактические образы по инструкции, поскольку их будущие версии могут отличаться.
 

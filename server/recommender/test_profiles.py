@@ -46,6 +46,23 @@ class ProfilesTest(unittest.TestCase):
         self.assertEqual(profiles.state(c,self.other)['values'],{})
         c.close()
 
+    def test_watchlist_unions_wants_excludes_ratings_seen_and_other_profiles(self):
+        from review_api import ensure_schema, save_feedback
+        c=self.connect();ensure_schema(c)
+        for kp in range(43,48):
+            c.execute("INSERT INTO media(kp_id,media_type,title,metadata_status) VALUES(?,'movie','Watch','ready')",(kp,))
+        for kp in (42,43,44):
+            c.execute("INSERT INTO watchlist(profile_id,kp_id,source) VALUES('owner',?,'kinopoisk')",(kp,))
+        c.commit()
+        save_feedback(c,'owner',{'kp_id':44,'status':'seen'})
+        save_feedback(c,'owner',{'kp_id':45,'status':'want'})
+        save_feedback(c,'owner',{'kp_id':43,'status':'want'})
+        save_feedback(c,self.other,{'kp_id':46,'status':'want'})
+        self.assertEqual([r['kp_id'] for r in profiles.catalog_data(c,'owner')['watchlist']],[43,45])
+        self.assertEqual([r['kp_id'] for r in profiles.catalog_data(c,self.other)['watchlist']],[46])
+        self.assertEqual(c.execute("SELECT COUNT(*) FROM watchlist WHERE profile_id='owner'").fetchone()[0],3)
+        c.close()
+
     def test_state_isolated_and_first_snapshot_is_backed_up(self):
         c=self.connect()
         first={'homecinema_appearance':'apple','file_view':{'a':{'percent':100,'updated':10}}}
@@ -74,6 +91,16 @@ class ProfilesTest(unittest.TestCase):
         self.assertIn('b',state['file_view'])
         self.assertEqual(state['online_watched_last']['show']['season'],2)
         self.assertEqual(state['homecinema_appearance'],'apple')
+        c.close()
+
+    def test_old_device_seeds_filters_without_merging_seasons_or_treating_arrays_as_progress(self):
+        c=self.connect()
+        remote={'torrents_filter_data':{'1:tv':{'season':['2'],'homecinema_scoped_season':True}}}
+        self.save(c,'owner',remote,seed=True)
+        self.save(c,'owner',{'torrents_filter_data':{'1:tv':{'season':['1']},'2:tv':{'season':['3']}}},seed=True,device='oldtv')
+        filters=profiles.state(c,'owner')['values']['torrents_filter_data']
+        self.assertEqual(filters['1:tv'],remote['torrents_filter_data']['1:tv'])
+        self.assertEqual(filters['2:tv']['season'],['3'])
         c.close()
 
     def test_concurrent_changes_merge_per_item_but_settings_conflict(self):

@@ -81,9 +81,20 @@ def review_data(connection, profile_id, report):
 def home_snapshot(connection, cache, profile_id):
     snapshot=cache.snapshot(profile_id) if cache else {
         "profile_id":profile_id,"rows":[],"status":[],"version":1}
+    excluded_watch=set()
+    if any(row.get('kind')=='watch' for row in snapshot['rows']):
+        excluded_watch={str(row[0]) for row in connection.execute(
+            'SELECT kp_id FROM user_ratings WHERE profile_id=?',(profile_id,))}
+        has_feedback=connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='recommendation_feedback'").fetchone()
+        if has_feedback:
+            excluded_watch.update(str(row[0]) for row in connection.execute(
+                "SELECT kp_id FROM recommendation_feedback WHERE profile_id=? AND status IN ('seen','not_interested')",(profile_id,)))
     hidden=hidden_home_ids(connection,profile_id)
     snapshot['hidden_ids']=hidden
     for row in snapshot['rows']:
+        if row.get('kind')=='watch':
+            row['results']=[card for card in row.get('results',[])
+                            if str(card.get('kinopoisk_id') or card.get('roman_review',{}).get('kp_id') or '') not in excluded_watch]
         if row.get('kind') in ('continue','ai','archive','now'):
             row['results']=[card for card in row.get('results',[])
                             if str(card.get('kinopoisk_id') or card.get('roman_review',{}).get('kp_id') or '') not in hidden]

@@ -79,7 +79,10 @@ from pathlib import Path
 shutil.copytree(sys.argv[1],sys.argv[2],dirs_exist_ok=True,ignore=shutil.ignore_patterns('.git','data','__pycache__','stack.env','profiles.json','rating-scale.json','.runtime.env'))
 Path(sys.argv[2],'.git').mkdir()
 END
-elif [[ "$*" == *"remote get-url origin" ]]; then echo 'https://github.com/RomanSuvorov89/HomeCinema.git'; fi
+elif [[ "$*" == *"config --get remote.origin.url" ]]; then echo 'https://github.com/RomanSuvorov89/HomeCinema.git';
+elif [[ "$*" == *"rev-parse"* ]]; then echo aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa;
+fi
+echo "git $*" >> "$TEST_LOG"
 ''')
             script('python3','if [[ "$1" == *preflight-ports.py ]]; then exit 0; fi\nexec "$TEST_PYTHON" "$@"\n')
             for name in ('pacman','apt-get','systemctl','usermod'):script(name,'echo "'+name+' $*" >> "$TEST_LOG"\n')
@@ -102,9 +105,73 @@ fi
             self.assertEqual(secret.read_text(),'keep-credentials')
             self.assertEqual((target/'config/stack.env').read_text(),runtime)
             commands=(directory/'commands.log').read_text()
+            self.assertIn('fetch origin main',commands)
+            self.assertIn('update-ref refs/homecinema/backups/',commands)
+            self.assertIn('checkout --detach aaaaaaaaaa',commands)
+            self.assertTrue(list((target/'server/backups').glob('home-cinema-backup-*.tar.gz')))
             self.assertIn('up -d --build',commands)
             self.assertNotIn(' down',commands)
             self.assertNotIn('volume rm',commands)
+
+    def test_real_git_update_keeps_private_state_and_prior_source(self):
+        with tempfile.TemporaryDirectory() as folder:
+            base=Path(folder);origin=base/'origin';origin.mkdir();target=base/'home'
+            def git(*args):
+                return subprocess.check_output(['git','-C',str(origin),*args],text=True,stderr=subprocess.STDOUT).strip()
+            git('init','-b','main');git('config','user.name','Test');git('config','user.email','test@example.invalid')
+            (origin/'scripts').mkdir();(origin/'server').mkdir()
+            (origin/'.gitignore').write_text('/config/\n/server/.runtime.env\n/server/data/\n/server/backups/\n')
+            (origin/'VERSION').write_text('1')
+            (origin/'scripts/prepare-first-run.py').write_text('''import sys
+from pathlib import Path
+r=Path(sys.argv[1]);(r/'config').mkdir(exist_ok=True)
+p=r/'config/stack.env'
+if not p.exists():p.write_text('private-config')
+''')
+            (origin/'server/install.sh').write_text('''set -eu
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+mkdir -p "$ROOT/server/data"
+touch "$ROOT/server/.runtime.env"
+cat "$ROOT/VERSION" > "$TEST_LOG"
+''')
+            (origin/'server/backup.sh').write_text('''set -eu
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+mkdir -p "$ROOT/server/backups"
+cp "$ROOT/server/data/private" "$ROOT/server/backups/private"
+''')
+            (origin/'server/healthcheck.sh').write_text('exit 0\n')
+            (origin/'scripts/update-profiles.sh').write_text('printf "legacy:%s:%s" "$1" "$2" > "$TEST_LOG"\n')
+            git('add','.');git('commit','-m','first');old=git('rev-parse','HEAD')
+            env=dict(os.environ,HC_INSTALL_DIR=str(target),HC_LEGACY_DIR=str(base/'legacy'),
+                HC_LAMPAINIT=str(base/'lampainit.js'),HC_PUBLIC_HOST='cinema.home',TEST_LOG=str(base/'version'),
+                GIT_CONFIG_COUNT='1',GIT_CONFIG_KEY_0='url.'+origin.as_uri()+'/.insteadOf',
+                GIT_CONFIG_VALUE_0='https://github.com/RomanSuvorov89/HomeCinema.git')
+            # Only Docker privilege detection is stubbed; clone, fetch, checkout and refs are real Git.
+            bin_dir=base/'bin';bin_dir.mkdir();docker=bin_dir/'docker';docker.write_text('#!/bin/sh\nexit 0\n');docker.chmod(0o755)
+            env['PATH']=str(bin_dir)+':'+env['PATH']
+            def run():return subprocess.run(['bash',str(ROOT/'install.sh')],env=env,capture_output=True,text=True,timeout=15)
+            first=run();self.assertEqual(first.returncode,0,first.stdout+first.stderr)
+            (target/'server/data/private').write_text('history-and-secret')
+            (origin/'VERSION').write_text('2');git('add','VERSION');git('commit','-m','second');new=git('rev-parse','HEAD')
+            second=run();self.assertEqual(second.returncode,0,second.stdout+second.stderr)
+            self.assertEqual((base/'version').read_text(),'2')
+            self.assertEqual((target/'config/stack.env').read_text(),'private-config')
+            self.assertEqual((target/'server/data/private').read_text(),'history-and-secret')
+            self.assertEqual((target/'server/backups/private').read_text(),'history-and-secret')
+            self.assertEqual(subprocess.check_output(['git','-C',str(target),'rev-parse','HEAD'],text=True).strip(),new)
+            refs=subprocess.check_output(['git','-C',str(target),'show-ref'],text=True)
+            self.assertIn(old+' refs/homecinema/backups/',refs)
+            (target/'VERSION').write_text('custom-work')
+            refused=run();self.assertNotEqual(refused.returncode,0)
+            self.assertEqual((target/'VERSION').read_text(),'custom-work')
+            self.assertEqual((base/'version').read_text(),'2','refused update never starts services')
+            # A separate installation is updated in place and never initializes a second stack.
+            legacy=base/'legacy';legacy.mkdir();(legacy/'kp_sync.py').write_text('existing')
+            (base/'lampainit.js').write_text('mounted')
+            env['HC_INSTALL_DIR']=str(base/'legacy-checkout')
+            upgraded=run();self.assertEqual(upgraded.returncode,0,upgraded.stdout+upgraded.stderr)
+            self.assertEqual((base/'version').read_text(),'legacy:'+new+':'+str(legacy))
+            self.assertFalse((base/'legacy-checkout/config/stack.env').exists())
 
 
 class LocalBootstrapServerTest(unittest.TestCase):
