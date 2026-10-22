@@ -192,6 +192,14 @@
         'torrserver_login','torrserver_password','jackett_url','jackett_key','parser_use','parser_torrent_type',
         'player_volume','interface_sound_level','video_quality_default','player_normalization','player_subs_shift_time',
         'subtitles_start','homecinema_appearance','poster_size'];
+    function firstRunCloud(status) {
+        if(!status.needs_setup || stored('homecinema_setup_seen_v1',false))return;
+        var shown=false;
+        function open(){if(shown)return;shown=true;persist('homecinema_setup_seen_v1',true);cloudMenu();}
+        if(window.appready)open();
+        else if(Lampa.Listener && Lampa.Listener.follow)Lampa.Listener.follow('app',function(event){if(event.type==='ready')open();});
+        else open();
+    }
     function cloudDeviceSave() {
         var values={};cloudDeviceFields.forEach(function(key){var value=read(key,'');if(value!=='')values[key]=value;});
         return request('/cloud/device.json',{device:device(),values:values});
@@ -443,7 +451,7 @@
                 });
             }
             return sync(!stored(migratedKey(active.id),false));
-        }).then(function () {finish();pollNotices();request('/cloud/status.json').then(function(status){if(status.connected)cloudDeviceSave().catch(function(){});}).catch(function(){});},function (error) {
+        }).then(function () {finish();pollNotices();request('/cloud/status.json').then(function(status){if(status.connected)cloudDeviceSave().catch(function(){});firstRunCloud(status);}).catch(function(){});},function (error) {
             errorText=error.message;
             notify(error.message);
             finish();

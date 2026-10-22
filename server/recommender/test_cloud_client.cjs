@@ -22,6 +22,12 @@ const context={Promise,Date,Math,encodeURIComponent,base:'http://catalog.home:91
 vm.createContext(context);vm.runInContext(source.slice(source.indexOf('    var cloudTimer='),source.indexOf('    function menu()')),context);
 const tick=()=>new Promise(r=>setImmediate(r));
 (async()=>{
+ let readyCallback,shown=0,seen=false;
+ context.stored=()=>seen;context.persist=()=>{seen=true;};context.Lampa.Listener={follow:(name,fn)=>readyCallback=fn};
+ const originalMenu=context.cloudMenu;context.cloudMenu=()=>shown++;
+ context.firstRunCloud({needs_setup:true});assert.equal(shown,0,'setup waits for native app readiness');
+ readyCallback({type:'ready'});readyCallback({type:'ready'});assert.equal(shown,1,'setup opens once after app ready');
+ context.cloudMenu=originalMenu;
  context.cloudMenu();await tick();menus.at(-1).onSelect({action:'connect'});
  assert.equal(inputs.length,1,'only nonsecret ClientID uses native keyboard');
  inputs[0].done('c'.repeat(32));

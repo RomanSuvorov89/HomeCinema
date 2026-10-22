@@ -25,6 +25,7 @@ from candidate_engine import (
 
 
 PROFILE_ID = os.environ.get("KINOPOISK_PROFILE_ID", "")
+PROFILE_ID = os.environ.get("HOME_PROFILE_ID") or PROFILE_ID
 PROFILE_DISPLAY_NAME = os.environ.get("PROFILE_DISPLAY_NAME", "Kinopoisk user")
 DATA_FILE = Path(os.environ.get("DATA_FILE", "/data/kinopoisk.json"))
 DB_FILE = Path(os.environ.get("DB_FILE", "/data/recommender.sqlite3"))
@@ -950,6 +951,8 @@ def sync(profile_id=None):
         public_id = read(connection, profile_id, PROFILE_ID)["kp_id"]
     finally:
         connection.close()
+    if not public_id:
+        raise ValueError("Подключите публичный профиль Кинопоиска в меню R")
     base = "https://www.kinopoisk.ru/user/" + public_id
     with tempfile.TemporaryDirectory() as directory:
         cookie_file = Path(directory) / "cookies.txt"
@@ -1593,9 +1596,14 @@ def import_connected_profile(profile):
 
 
 def refresh_file():
-    from connections import IMPORT_LOCK, ensure
+    from connections import IMPORT_LOCK, ensure, read
     with IMPORT_LOCK:
-        data = import_connected_profile(PROFILE_ID)
+        connection = direct_connection()
+        try:
+            public_id = read(connection, PROFILE_ID, PROFILE_ID)['kp_id']
+        finally:
+            connection.close()
+        data = import_connected_profile(PROFILE_ID) if public_id else {'ratings_count': 0, 'watchlist_count': 0}
         connection = direct_connection()
         try:
             ensure(connection)
@@ -1616,7 +1624,9 @@ def refresh_loop():
             refresh_file()
         except Exception as error:
             print(f"update failed: {error}", flush=True)
-        time.sleep(REFRESH_SECONDS)
+        from connections import REFRESH_EVENT
+        REFRESH_EVENT.wait(REFRESH_SECONDS)
+        REFRESH_EVENT.clear()
 
 
 def enrichment_loop():
@@ -2080,7 +2090,7 @@ class Handler(BaseHTTPRequestHandler):
             finally:
                 connection.close()
             return
-        if path == '/data.json' and profile_id != PROFILE_ID:
+        if path == '/data.json' and (profile_id != PROFILE_ID or PROFILE_ID.startswith('local_')):
             connection = direct_connection()
             try:
                 from profiles import catalog_data
@@ -2234,25 +2244,31 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    if not PROFILE_ID.isdigit():
-        raise SystemExit("Set KINOPOISK_PROFILE_ID to your public numeric profile ID")
+    if not (PROFILE_ID.isdigit() or re.fullmatch(r'local_[a-f0-9]{24}', PROFILE_ID)):
+        raise SystemExit("Set a public Kinopoisk ID or a generated HOME_PROFILE_ID")
     if os.environ.get("SERVE") == "1":
-        from home_cache import Cache, start_worker
-        HOME_CACHE = Cache(os.environ.get("HOME_CACHE_DB", DATA_FILE.parent / "home-cache.sqlite3"))
-        start_worker(HOME_CACHE, PROFILE_ID, LAMPAC_URL, home_personal_data)
-        from home_cache import kinopoisk_enabled
-        if kinopoisk_enabled():
-            snapshot_database("before-candidates")
-            threading.Thread(target=refresh_loop, daemon=True).start()
-            threading.Thread(target=enrichment_loop, daemon=True).start()
-        # homecinema-cloud-worker
-        from cloud_disk import manager
         from profiles import ensure
         connection = open_database()
         try:
             ensure(connection, PROFILE_ID, PROFILE_DISPLAY_NAME)
         finally:
             connection.close()
+        # A real local owner exists before any network worker starts. No fake KP account.
+        if not DATA_FILE.exists():
+            DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
+            temporary = DATA_FILE.with_suffix('.startup.tmp')
+            temporary.write_text(json.dumps({'profile_id': PROFILE_ID, 'ratings': [], 'watchlist': [],
+                'ratings_count': 0, 'watchlist_count': 0, 'updated_at': 0}))
+            temporary.replace(DATA_FILE)
+        from home_cache import Cache, start_worker, kinopoisk_enabled
+        HOME_CACHE = Cache(os.environ.get("HOME_CACHE_DB", DATA_FILE.parent / "home-cache.sqlite3"))
+        start_worker(HOME_CACHE, PROFILE_ID, LAMPAC_URL, home_personal_data)
+        if kinopoisk_enabled():
+            snapshot_database("before-candidates")
+            threading.Thread(target=refresh_loop, daemon=True).start()
+            threading.Thread(target=enrichment_loop, daemon=True).start()
+        # homecinema-cloud-worker
+        from cloud_disk import manager
         manager(direct_connection, PROFILE_ID, DATA_FILE.parent / 'cloud')
         ThreadingHTTPServer(("0.0.0.0", 9120), Handler).serve_forever()
     else:

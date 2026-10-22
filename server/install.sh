@@ -6,21 +6,23 @@ CONFIG_DIR="$ROOT/../config"
 ENV_FILE="$CONFIG_DIR/stack.env"
 PROFILES_FILE="$CONFIG_DIR/profiles.json"
 
+root_run() { if [[ "$(id -u)" == 0 ]]; then "$@"; else sudo "$@"; fi; }
+
 install_dependencies() {
   if command -v pacman >/dev/null 2>&1; then
-    sudo pacman -S --needed --noconfirm docker docker-compose curl jq python unzip
+    root_run pacman -S --needed --noconfirm docker docker-compose curl jq python unzip
   elif command -v apt-get >/dev/null 2>&1; then
-    sudo apt-get update
-    sudo apt-get install -y docker.io curl jq python3 unzip
-    sudo apt-get install -y docker-compose-v2 || \
-      sudo apt-get install -y docker-compose-plugin || \
-      sudo apt-get install -y docker-compose
+    root_run apt-get update
+    root_run apt-get install -y docker.io curl jq python3 unzip
+    root_run apt-get install -y docker-compose-v2 || \
+      root_run apt-get install -y docker-compose-plugin || \
+      root_run apt-get install -y docker-compose
   else
     echo "Automatic dependency installation supports Arch/CachyOS and Debian/Ubuntu only."
     exit 1
   fi
-  sudo systemctl enable --now docker
-  sudo usermod -aG docker "$USER" || true
+  root_run systemctl enable --now docker
+  if [[ "$(id -u)" != 0 ]]; then root_run usermod -aG docker "$(id -un)"; fi
 }
 
 if [[ "${1:-}" == "--install-deps" ]]; then
@@ -91,8 +93,10 @@ PROFILE_JSON="$(jq -c --arg id "$ACTIVE_PROFILE_ID" '.profiles[] | select(.id ==
 [[ -n "$PROFILE_JSON" ]] || { echo "Profile $ACTIVE_PROFILE_ID not found"; exit 1; }
 KINOPOISK_PROFILE_ID="$(jq -r '.kinopoisk_profile_id' <<<"$PROFILE_JSON")"
 PROFILE_DISPLAY_NAME="$(jq -r '.display_name' <<<"$PROFILE_JSON")"
+HOME_PROFILE_ID="$(jq -r '.home_profile_id // .kinopoisk_profile_id' <<<"$PROFILE_JSON")"
 LAMPAC_SYNC_ID="$(jq -r '.lampac_sync_id' <<<"$PROFILE_JSON")"
-[[ "$KINOPOISK_PROFILE_ID" =~ ^[0-9]+$ ]] || { echo "kinopoisk_profile_id must contain digits"; exit 1; }
+[[ "$HOME_PROFILE_ID" =~ ^([0-9]+|local_[a-f0-9]{24})$ ]] || { echo "Invalid initial home profile ID"; exit 1; }
+[[ -z "$KINOPOISK_PROFILE_ID" || "$KINOPOISK_PROFILE_ID" =~ ^[0-9]+$ ]] || { echo "kinopoisk_profile_id must contain digits or be empty for a new home"; exit 1; }
 [[ "$LAMPAC_SYNC_ID" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "lampac_sync_id contains unsupported characters"; exit 1; }
 [[ "$PROFILE_DISPLAY_NAME" != *"'"* && "$PROFILE_DISPLAY_NAME" != *$'\n'* ]] || {
   echo "display_name may not contain apostrophes or newlines"
@@ -112,6 +116,7 @@ POSTER_PORT=${POSTER_PORT:-9121}
 PUID=$PUID
 PGID=$PGID
 KINOPOISK_PROFILE_ID=$KINOPOISK_PROFILE_ID
+HOME_PROFILE_ID=$HOME_PROFILE_ID
 PROFILE_DISPLAY_NAME='$PROFILE_DISPLAY_NAME'
 LAMPAC_SYNC_ID=$LAMPAC_SYNC_ID
 ENRICH_BATCH_SIZE=${ENRICH_BATCH_SIZE:-100}
@@ -120,7 +125,7 @@ KINOPOISK_METADATA_RPM=${KINOPOISK_METADATA_RPM:-12}
 WIKIPEDIA_METADATA_RPM=${WIKIPEDIA_METADATA_RPM:-20}
 EOF
 
-export KINOPOISK_PROFILE_ID PROFILE_DISPLAY_NAME LAMPAC_SYNC_ID PUID PGID
+export KINOPOISK_PROFILE_ID HOME_PROFILE_ID PROFILE_DISPLAY_NAME LAMPAC_SYNC_ID PUID PGID
 mkdir -p "$ROOT/data/lampac/cache" "$ROOT/data/lampac/database" "$ROOT/data/torrserver" "$ROOT/data/recommender" "$ROOT/data/poster-cache"
 printf '%s' "$LAMPAC_ROOT_PASSWORD" > "$ROOT/data/lampac/passwd"
 chmod 600 "$ROOT/data/lampac/passwd"
@@ -137,6 +142,7 @@ if [[ ! -f "$ROOT/data/poster-cache/poster-overrides.json" ]]; then
   cp "$CONFIG_DIR/poster-overrides.example.json" "$ROOT/data/poster-cache/poster-overrides.json"
 fi
 
+python3 "$ROOT/../scripts/preflight-ports.py" "$ROOT" "${DOCKER[@]}"
 "${DOCKER[@]}" pull ghcr.io/lampac-nextgen/lampac:latest
 TEMP_CONTAINER="${STACK_NAME}-lampac-extract-$$"
 "${DOCKER[@]}" create --name "$TEMP_CONTAINER" ghcr.io/lampac-nextgen/lampac:latest >/dev/null
@@ -157,9 +163,9 @@ python3 "$ROOT/scripts/render.py"
 
 echo "Waiting for services..."
 for _ in {1..60}; do
-  if curl -fsS "http://127.0.0.1:${LAMPAC_PORT:-9118}/version?type=hash" >/dev/null 2>&1 &&
-     curl -fsS "http://127.0.0.1:${RECOMMENDER_PORT:-9120}/health" >/dev/null 2>&1 &&
-     curl -fsS "http://127.0.0.1:${POSTER_PORT:-9121}/health" >/dev/null 2>&1; then
+  if curl -fsS --connect-timeout 2 --max-time 5 "http://127.0.0.1:${LAMPAC_PORT:-9118}/version?type=hash" >/dev/null 2>&1 &&
+     curl -fsS --connect-timeout 2 --max-time 5 "http://127.0.0.1:${RECOMMENDER_PORT:-9120}/health" >/dev/null 2>&1 &&
+     curl -fsS --connect-timeout 2 --max-time 5 "http://127.0.0.1:${POSTER_PORT:-9121}/health" >/dev/null 2>&1; then
     echo "Installation completed: $PUBLIC_LAMPAC_URL"
     exit 0
   fi

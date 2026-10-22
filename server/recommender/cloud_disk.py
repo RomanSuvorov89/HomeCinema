@@ -150,8 +150,9 @@ def snapshot(factory, owner, devices):
         from connections import ensure
         ensure(c)
         # Preserve the legacy implicit KP source even when owner IDs change on a new server.
-        with c:
-            c.execute('INSERT OR IGNORE INTO home_connections(profile_id,kp_id) VALUES(?,?)', (owner, owner))
+        if owner.isdigit():
+            with c:
+                c.execute('INSERT OR IGNORE INTO home_connections(profile_id,kp_id) VALUES(?,?)', (owner, owner))
         c.execute('BEGIN')  # One consistent WAL read snapshot, including all personal tables.
         existing = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         tables = {}
@@ -259,7 +260,8 @@ class Manager:
                               {'Content-Type': 'application/x-www-form-urlencoded'})
 
     def status(self):
-        return {'configured': bool(self.config.get('client_id')), 'connected': bool(self.config.get('access_token')),
+        return {'needs_setup': self.owner.startswith('local_') and not self.config.get('enabled', False),
+                    'configured': bool(self.config.get('client_id')), 'connected': bool(self.config.get('access_token')),
                     'enabled': self.config.get('enabled', False), 'busy': self.job,
                     'last_save': self.config.get('last_save', 0), 'error': self.last_error,
                     'awaiting_choice': bool(self.config.get('access_token')) and not self.config.get('enabled', False)}
@@ -398,6 +400,8 @@ class Manager:
         self.config.update(key=base64.b64encode(key).decode(), salt=base64.b64encode(salt).decode(), enabled=True)
         self.staged = None
         self.write()
+        from connections import REFRESH_EVENT
+        REFRESH_EVENT.set()
         return {'ok': True, 'reload': True}
 
     def run_job(self, action):

@@ -39,6 +39,7 @@ services:
     environment:
       TZ: "${TZ:-Europe/Moscow}"
       KINOPOISK_PROFILE_ID: "${KINOPOISK_PROFILE_ID}"
+      HOME_PROFILE_ID: "${HOME_PROFILE_ID:-}"
       PROFILE_DISPLAY_NAME: "${PROFILE_DISPLAY_NAME}"
       LAMPAC_URL: "http://lampac:9118"
       REFRESH_SECONDS: "86400"

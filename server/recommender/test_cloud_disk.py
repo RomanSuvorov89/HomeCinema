@@ -165,14 +165,14 @@ class CloudTest(unittest.TestCase):
         for url in ('http://yandex.ru/file','https://yandex.ru.evil.example/file','https://127.0.0.1/file'):
             with self.assertRaises(cloud.CloudError):cloud.http(url)
 
-    def test_legacy_implicit_kp_source_survives_owner_remap(self):
+    def test_non_numeric_owner_does_not_create_fake_kp_source(self):
         c=self.factory()
         with c:c.execute('DELETE FROM home_connections')
         c.close()
         document=cloud.snapshot(self.factory,'owner',{})
         cloud.restore(self.factory,document,'new_owner',self.root/'backups')
         c=self.factory()
-        self.assertEqual(connections.read(c,'new_owner','new_owner')['kp_id'],'owner')
+        self.assertEqual(connections.read(c,'new_owner','new_owner')['kp_id'],'')
         c.close()
 
     def test_retention_is_per_server_and_restart_keeps_credentials(self):
@@ -258,6 +258,14 @@ class CloudTest(unittest.TestCase):
                 raise HTTPError(request.full_url,302,'redirect',{'Location':'http://127.0.0.1/private'},None)
         with patch.object(cloud,'build_opener',return_value=Evil()):
             with self.assertRaises(cloud.CloudError):cloud.http('https://downloader.disk.yandex.ru/file',binary=True)
+
+    def test_restoration_wakes_background_import(self):
+        self.enable();self.m.save(True)
+        preview=self.m.preview(self.m.versions()['items'][0]['name'],self.password)
+        connections.REFRESH_EVENT.clear()
+        self.m.apply(preview['ticket'])
+        self.assertTrue(connections.REFRESH_EVENT.is_set())
+        connections.REFRESH_EVENT.clear()
 
     def test_kp_id_parser(self):
         self.assertEqual(connections.kp_id('https://www.kinopoisk.ru/user/12345/'),'12345')

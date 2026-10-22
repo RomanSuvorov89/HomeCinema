@@ -4,6 +4,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 while IFS= read -r file; do bash -n "$file"; done < <(find server scripts -type f -name '*.sh')
 python3 -m compileall -q server scripts
+bash -n install.sh
+python3 scripts/test_one_command.py
 python3 scripts/test_portable.py
 python3 scripts/test_actions_install.py
 python3 scripts/test_profiles_install.py

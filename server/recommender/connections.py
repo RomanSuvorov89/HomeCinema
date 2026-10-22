@@ -5,6 +5,7 @@ import time
 from urllib.parse import urlparse
 
 IMPORT_LOCK = threading.RLock()
+REFRESH_EVENT = threading.Event()
 RUNNING = set()
 GUARD = threading.Lock()
 
@@ -32,7 +33,7 @@ def kp_id(value):
 def read(c, profile, owner):
     ensure(c)
     row = c.execute('SELECT kp_id,checked_at,error FROM home_connections WHERE profile_id=?', (profile,)).fetchone()
-    return {'kp_id': row[0] if row else owner if profile == owner else '',
+    return {'kp_id': row[0] if row else owner if profile == owner and owner.isdigit() else '',
             'checked_at': row[1] if row else 0, 'error': row[2] if row else ''}
 
 
