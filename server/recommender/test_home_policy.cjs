@@ -11,7 +11,15 @@ class Element{
  querySelector(selector){const name=selector.slice(1);for(const c of this.children){if(c.className.split(' ').includes(name))return c;const found=c.querySelector(selector);if(found)return found;}return null;}
  remove(){this.parent.children=this.parent.children.filter(x=>x!==this);}
 }
+const renderedFilters=[];
+const nativeSelectedFilter=vm.runInNewContext(
+ fs.readFileSync('tests/fixtures/lampa-torrents-selected-filter.js','utf8')+';nativeSelectedFilter;',{
+ Arrays:{isArray:Array.isArray},filter_translate:{quality:'Качество',season:'Сезон'},
+ filter_items:{quality:['Все','1080p'],season:['Все','1','2']},
+ filter:{chosen:(type,labels)=>renderedFilters.push(Array.from(labels))}
+ });
 function Native(object){
+ this.selectedFilter=nativeSelectedFilter;
  this.cardID=()=>object.movie.id+':tv';
  this.getFilterData=()=>values.torrents_filter_data[this.cardID()]||values.torrents_filter||{};
  this.setFilterData=filter=>{values.torrents_filter_data[this.cardID()]=filter;values.torrents_filter=filter;};
@@ -35,12 +43,19 @@ values.torrents_filter_data['1:tv']={quality:['1080p'],season:['2']};
 const euphoria=new registry.torrents({movie:{id:1}});
 assert.equal(euphoria.getFilterData().season,undefined,'untrusted legacy season migrates once');
 euphoria.setFilterData({quality:['1080p'],season:['2']});
+assert.doesNotThrow(()=>euphoria.selectedFilter(),'native renderer must not receive the service marker as a filter');
+assert.deepEqual(renderedFilters.at(-1),['Качество:1080p','Сезон:2']);
+assert.equal(values.torrents_filter_data['1:tv'].homecinema_scoped_season,true,'keep persisted season migration state');
+assert(!Object.hasOwn(euphoria.getFilterData(),'homecinema_scoped_season'),'service metadata must not escape the adapter');
 const ted=new registry.torrents({movie:{id:2}});
 assert.equal(ted.getFilterData().season,undefined,'new series never inherits global season even if global is marked');
 assert.equal(ted.getFilterData().quality[0],'1080p');
 ted.setFilterData(ted.getFilterData());assert.equal(ted.getFilterData().season,undefined);
+assert.doesNotThrow(()=>ted.selectedFilter());assert.deepEqual(renderedFilters.at(-1),['Качество:1080p']);
 assert.equal(new registry.torrents({movie:{id:1}}).getFilterData().season[0],'2','own selection survives reopening');
 euphoria.setFilterData({});assert.equal(euphoria.getFilterData().season,undefined,'reset is respected');
+assert.doesNotThrow(()=>euphoria.selectedFilter());assert.deepEqual(renderedFilters.at(-1),[],'reset must not leave a service flag in the visible filters');
+const reopened=new registry.torrents({movie:{id:1}});assert.doesNotThrow(()=>reopened.selectedFilter());
 // A late native timetable render must not replace the actual S2E3 label with S2E8.
 const element=new Element('card');element.card_data={original_name:'Euphoria',media_type:'tv'};const view=new Element('card__view');element.appendChild(view);cards.push(element);
 values.online_watched_last={Euphoria:{season:2,episode:3}};const before=JSON.stringify(values);writes=0;

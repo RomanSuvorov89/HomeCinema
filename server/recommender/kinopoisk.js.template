@@ -512,6 +512,9 @@
             var saved=all[instance.cardID()];
             var filter=Object.assign({},get.call(instance));
             if(!saved || !saved.homecinema_scoped_season) delete filter.season;
+            // Native selectedFilter treats every key as a real filter and indexes
+            // filter_items[key][value]. Keep migration metadata storage-only.
+            delete filter.homecinema_scoped_season;
             return filter;
           };
           instance.setFilterData=function(filter) {
