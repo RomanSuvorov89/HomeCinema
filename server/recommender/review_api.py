@@ -78,9 +78,39 @@ def review_data(connection, profile_id, report):
             "generated_at": report.get("generated_at"), "stage": "review_only"}
 
 
+def series_releases(connection, today=None):
+    """Read known releases only; a home request never fetches or rewrites schedules."""
+    from datetime import date
+    today=today or date.today()
+    if not connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='episode_schedules'").fetchone():
+        return []
+    releases=[]
+    for row in connection.execute("""SELECT m.kp_id,m.tmdb_id,m.original_title,m.release_year,e.episodes_json
+            FROM media m JOIN episode_schedules e USING(kp_id) WHERE m.media_type='tv'"""):
+        try:
+            episodes=json.loads(row[4])
+            if not isinstance(episodes,list):continue
+            aired=[];future=[]
+            for ep in episodes:
+                try:
+                    day=date.fromisoformat(ep['date'])
+                    season=int(ep['season']);episode=int(ep['episode'])
+                    if season<1 or episode<1:continue
+                except (KeyError,ValueError,TypeError):continue
+                (aired if day<=today else future).append((season,episode,day.isoformat()))
+            if not aired:continue
+            latest=max(aired,key=lambda ep:(ep[0],ep[1]))
+            releases.append({'kp_id':row[0],'tmdb_id':row[1],'original_title':row[2],
+                'release_year':row[3],'season':latest[0],'episode':latest[1],
+                'next_air_date':min((ep[2] for ep in future),default=None)})
+        except (ValueError,TypeError):continue
+    return releases
+
+
 def home_snapshot(connection, cache, profile_id):
     snapshot=cache.snapshot(profile_id) if cache else {
         "profile_id":profile_id,"rows":[],"status":[],"version":1}
+    snapshot['series_releases']=series_releases(connection)
     excluded_watch=set()
     if any(row.get('kind')=='watch' for row in snapshot['rows']):
         excluded_watch={str(row[0]) for row in connection.execute(

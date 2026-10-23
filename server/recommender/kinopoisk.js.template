@@ -394,6 +394,63 @@
     return filterReleaseCards(result);
   }
 
+  var continueDisplayCards=[];
+  function releaseForCard(card) {
+    var saved=Lampa.Storage.get('roman_home_shelves_releases_v1',{});
+    var releases=saved && Array.isArray(saved.items)?saved.items:[];
+    var kp=card.kinopoisk_id || (card.roman_review && card.roman_review.kp_id);
+    var matches=kp?releases.filter(function(r){return String(r.kp_id)===String(kp);}):[];
+    if(!matches.length && (card.source || 'cub').match(/^(cub|tmdb)$/))
+      matches=releases.filter(function(r){return r.tmdb_id && String(r.tmdb_id)===String(card.id || card.tmdb_id);});
+    if(!matches.length) {
+      var name=String(card.original_name || card.original_title || '').trim().toLowerCase();
+      var year=String(card.first_air_date || card.release_date || card.release_year || '').slice(0,4);
+      if(name && year) matches=releases.filter(function(r){return String(r.original_title || '').trim().toLowerCase()===name && String(r.release_year)===year;});
+    }
+    return matches.length===1?matches[0]:null;
+  }
+
+  function caughtUpSeries(card) {
+    if(!(card.original_name || card.first_air_date || card.media_type==='tv')) return false;
+    var release=releaseForCard(card);
+    if(!release) return false;
+    var last=lastHomeEpisode(card);
+    // Preserve an active earlier episode (including rewatches) even if an old
+    // timeline entry happens to mark a later finale complete.
+    if(last && (Number(last.season)!==Number(release.season) || Number(last.episode)!==Number(release.episode))) return false;
+    var now=new Date(),today=now.getFullYear()+'-'+('0'+(now.getMonth()+1)).slice(-2)+'-'+('0'+now.getDate()).slice(-2);
+    // A stored schedule stops proving completion when its next episode is due.
+    if(release.next_air_date && release.next_air_date<=today) return false;
+    if(!Lampa.Timeline) return false;
+    var percent=0;
+    if(typeof Lampa.Timeline.watchedEpisode==='function')
+      percent=Number(Lampa.Timeline.watchedEpisode(card,release.season,release.episode));
+    else if(typeof Lampa.Timeline.view==='function') {
+      var name=card.original_name || card.original_title;
+      if(!name) return false;
+      var hash=Lampa.Utils.hash([release.season,release.season>10?':':'',release.episode,name].join(''));
+      percent=Number((Lampa.Timeline.view(hash) || {}).percent);
+    }
+    return isFinite(percent) && percent>=90;
+  }
+
+  function continueHomeCards(cards) {
+    return (cards || []).filter(function(card){return !caughtUpSeries(card);}).map(function(card){
+      var display=Object.assign({},card);
+      continueDisplayCards.push(display);
+      if(continueDisplayCards.length>1000) continueDisplayCards.shift();
+      return display;
+    });
+  }
+
+  function refreshContinueCard(element) {
+    if(element && element.card_data && continueDisplayCards.indexOf(element.card_data)>=0)
+      element.classList.toggle('homecinema-caught-up',caughtUpSeries(element.card_data));
+  }
+  function refreshContinueCards() {
+    Array.prototype.forEach.call(document.querySelectorAll('.card'),refreshContinueCard);
+  }
+
   function lastHomeEpisode(card) {
     if(!(card.original_name || card.first_air_date || card.media_type==='tv')) return null;
     var last=Lampa.Storage.get('online_watched_last',{});
@@ -422,20 +479,27 @@
     window.homecinemaNavigationV1=true;
     var style=document.createElement('style');
     style.textContent='.head .full--screen{display:none!important}'+
-      'body.homecinema-main .head__backward,body.homecinema-main .head__title{display:none!important}'+
+      'body.homecinema-main .head__backward{display:none!important}'+
+      '.card.homecinema-caught-up{display:none!important}'+
       '.homecinema-known-episode .card-watched{display:none!important}'+
       '.homecinema-last-episode{position:absolute;bottom:.45em;left:.45em;right:.45em;padding:.5em .4em;'+
       'border-radius:.7em;background:rgba(10,12,18,.82);color:#fff;font-size:.7em;line-height:1.35;pointer-events:none}';
     document.head.appendChild(style);
     function updateHeader() {
       var active=Lampa.Activity.active();
-      document.body.classList.toggle('homecinema-main',!!active && active.component==='main');
+      var main=!!active && active.component==='main';
+      document.body.classList.toggle('homecinema-main',main);
+      if(main && Lampa.Head && typeof Lampa.Head.title==='function')
+        Lampa.Head.title(String(active.title || Lampa.Lang.translate('title_main')).replace(/\s*[-—–]\s*CUB\s*$/i,''));
     }
     if(Lampa.Listener) Lampa.Listener.follow('activity',updateHeader);
     updateHeader();
     if(Lampa.Storage.listener) Lampa.Storage.listener.follow('change',function(e) {
       if(e.name==='online_watched_last') Array.prototype.forEach.call(document.querySelectorAll('.card'),drawLastHomeEpisode);
+      if(/^(online_watched_last|file_view(?:_|$)|timetable)/.test(e.name)) refreshContinueCards();
     });
+    if(Lampa.Timeline && Lampa.Timeline.listener) Lampa.Timeline.listener.follow('update',refreshContinueCards);
+    if(Lampa.Listener) Lampa.Listener.follow('state:changed',function(e){if(e.target==='timeline')refreshContinueCards();});
     // Native fallback includes the previous show's season. Only per-card values
     // created with the corrected policy may carry a season; migrate old filters once.
     var Native=Lampa.Component.get && Lampa.Component.get('torrents');
@@ -608,7 +672,11 @@
         api[method]=function () {
           var args=Array.prototype.slice.call(arguments),callback=args[callbackIndex];
           if(typeof callback==='function') args[callbackIndex]=function (json) {
-            if(json && Array.isArray(json.results)) json=Object.assign({},json,{results:filterReleaseCards(json.results)});
+            if(json && Array.isArray(json.results)) {
+              var cards=filterReleaseCards(json.results);
+              if(args[0] && args[0].url==='continue') cards=continueHomeCards(cards);
+              json=Object.assign({},json,{results:cards});
+            }
             return callback(json);
           };
           return originalRequest.apply(this,args);
@@ -617,9 +685,10 @@
       });
     });
     // Server materializes these rows on a timer; opening Lampa only reads a snapshot.
-    var preview = null, previewRevision = -1;
+    var preview = null, previewRevision = -1, previewAt=0;
     function loadPreview() {
-      if (preview && previewRevision === homeFeedbackRevision) return preview;
+      if (preview && previewRevision === homeFeedbackRevision && Date.now()-previewAt<60000) return preview;
+      previewAt=Date.now();
       previewRevision = homeFeedbackRevision;
       var requestRevision = homeFeedbackRevision;
       preview = new Promise(function (resolve) {
@@ -627,6 +696,10 @@
         net.timeout(1200);
         net.silent(reviewBase + '/home.json', function (snapshot) {
           if (!snapshot || !Array.isArray(snapshot.rows)) return resolve(null);
+          if(Array.isArray(snapshot.series_releases)) {
+            Lampa.Storage.set('roman_home_shelves_releases_v1',{items:snapshot.series_releases});
+            refreshContinueCards();
+          }
           if (requestRevision === homeFeedbackRevision && Array.isArray(snapshot.hidden_ids)) {
             var hidden = {};snapshot.hidden_ids.forEach(function(kp){hidden[String(kp)]=true;});
             Lampa.Storage.set('roman_hidden_home_v1',hidden);
@@ -857,6 +930,7 @@
       };
     }
     cub.main = function (params, done, failed) {
+      loadPreview();
       var plan={captured:false,remaining:0};
       var next;
       function normalize(rows) {
@@ -865,6 +939,7 @@
           var kind=homeRowKind(row);
           if(kind==='archive') row.title='Из прошлых лет';
           if(kind==='watch') row.results=combinedWatchCards(row.results);
+          if(kind==='continue') row.results=continueHomeCards(row.results);
           if(homeRowKind(row)==='now') {
             if(!row.results.some(function(c){return c.roman_review;})) row.results=personalizeNow(row.results);
             row.title='Сейчас смотрят';
@@ -1262,6 +1337,7 @@
 
   function processCard(element) {
     drawLastHomeEpisode(element);
+    refreshContinueCard(element);
     if (element && element.card_data) {
       var review = reviewForCard(element.card_data);
       if (review) {
