@@ -21,6 +21,29 @@
     }, true);
     window.addEventListener('unhandledrejection', function (e) {report('promise', e.reason && (e.reason.stack || e.reason.message) || e.reason);});
     function own(url) {return String(url).split('?')[0].split('#')[0] === '__RECOMMENDER_PUBLIC_URL__/kinopoisk.js' && window.romanEmbedded054;}
+    function quietStartup() {
+        if (Lampa.Noty && typeof Lampa.Noty.show === 'function' && !Lampa.Noty.show.homecinemaQuietSuccess) {
+            var originalShow = Lampa.Noty.show;
+            Lampa.Noty.show = function (message) {
+                if (typeof message === 'string') {
+                    var text = message.trim();
+                    var translated = Lampa.Lang && Lampa.Lang.translate('plugins_add_success');
+                    if (text === 'Плагин успешно подключен' ||
+                        (translated && translated !== 'plugins_add_success' && text === translated)) return;
+                }
+                return originalShow.apply(this, arguments);
+            };
+            Lampa.Noty.show.homecinemaQuietSuccess = true;
+        }
+        if (document.head && !document.getElementById('homecinema-quiet-startup')) {
+            var style = document.createElement('style');
+            style.id = 'homecinema-quiet-startup';
+            // Upstream halloween promotion can append its button after startup.
+            // Keep settings, search, profile and notification controls untouched.
+            style.textContent = '.head .halloween__button{display:none!important}';
+            document.head.appendChild(style);
+        }
+    }
     function wrapLoaders() {
         if (wrapped || !Lampa.Utils || !Lampa.Platform) return;
         wrapped = true;
@@ -61,7 +84,7 @@
         });
     }
     function boot() {
-        if (window.Lampa && document.body) wrapLoaders();
+        if (window.Lampa && document.body) {quietStartup();wrapLoaders();}
         if (!(window.Lampa && Lampa.Storage && Lampa.Platform && Lampa.Component && Lampa.Listener && Lampa.Api && Lampa.Api.sources && Lampa.Api.sources.cub && document.body)) {
             if(Date.now()-started < 15000) setTimeout(boot,20);
             else report('bootstrap','Lampa API not ready');
