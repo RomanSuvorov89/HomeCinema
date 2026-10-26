@@ -1,6 +1,6 @@
 const fs=require('fs'),vm=require('vm'),assert=require('assert/strict');
 const source=fs.readFileSync('profiles-client.js.template','utf8');
-let status={configured:false,connected:false},menus=[],modals=[],inputs=[],calls=[],intervals=[],syncs=0,closed=0;
+let status={configured:false,connected:false},menus=[],modals=[],inputs=[],calls=[],intervals=[],syncs=0,closed=0,legacy=false;
 class Q {
  constructor(markup){this.markup=markup;this.children=[];this.attrs={};this.value='';this[0]={focus(){}};}
  attr(k,v){this.attrs[k]=v;return this;}appendTo(q){q.children.push(this);return this;}
@@ -16,7 +16,7 @@ const context={Promise,Date,Math,encodeURIComponent,base:'http://catalog.home:91
   if(path==='/cloud/connect.json')result={user_code:'ABC123',verification_url:'https://oauth.yandex.ru/device',expires_in:300,interval:5};
   if(path==='/cloud/poll.json')result={connected:true};
   if(path==='/cloud/versions.json')result={items:[{name:'backup.hcb',size:1024,modified:'2026-10-22'}]};
-  if(path==='/cloud/preview.json')result={ticket:'one-time',profiles:2,ratings:100};
+  if(path==='/cloud/preview.json')result=legacy && !payload.password?{password_required:true}:{ticket:'one-time',profiles:2,ratings:100};
   return Promise.resolve(result);
  }};
 vm.createContext(context);vm.runInContext(source.slice(source.indexOf('    var cloudTimer='),source.indexOf('    function menu()')),context);
@@ -41,7 +41,8 @@ const tick=()=>new Promise(r=>setImmediate(r));
  assert(menus.at(-1).items.some(i=>i.action==='enable'));
  assert(!calls.some(c=>c.path==='/cloud/enable.json'),'connecting alone cannot start cloud writes');
  context.cloudVersions();await tick();menus.at(-1).onSelect({file:'backup.hcb'});
- const password=modals.at(-1);password.html.value='recovery password';password.buttons[0].onSelect();await tick();
+ await tick();
+ assert(!calls.find(c=>c.path==='/cloud/preview.json').payload.password,'new copies need only Yandex authorization');
  assert.equal(inputs.length,1);
  const preview=menus.at(-1);assert(preview.title.includes('2 профилей'));preview.onSelect({restore:true});await tick();
  assert.equal(context.busy,true,'old client is stopped before restoration');
@@ -49,5 +50,12 @@ const tick=()=>new Promise(r=>setImmediate(r));
  status={connected:true,configured:true,enabled:true};context.cloudMenu();await tick();menus.at(-1).onSelect({action:'save'});await tick();
  assert(syncs>0,'flush profile before backup');
  assert.equal(calls.find(c=>c.path==='/cloud/device.json').payload.values.torrserver_url,'http://ts.home:8090');
+ context.cloudMenu();await tick();menus.at(-1).onSelect({action:'enable'});await tick();
+ assert.equal(calls.find(c=>c.path==='/cloud/enable.json').payload.mode,'yandex');
+ assert(!('password' in calls.find(c=>c.path==='/cloud/enable.json').payload));
+ legacy=true;context.cloudVersions();await tick();menus.at(-1).onSelect({file:'old.hcb'});await tick();
+ const password=modals.at(-1);assert(password.title.includes('старой копии'));
+ password.html.value='old recovery password';password.buttons[0].onSelect();await tick();
+ assert.equal(calls.filter(c=>c.path==='/cloud/preview.json').at(-1).payload.password,'old recovery password');
  console.log('Cloud UI: QR/device code, secrets outside native keyboard, no implicit writes, restore confirmation, profile flush and DNS settings passed');
 })().catch(e=>{console.error(e);process.exit(1);});

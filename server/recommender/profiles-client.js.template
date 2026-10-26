@@ -263,17 +263,25 @@
             var items=data.items.map(function(row){return {title:row.modified || row.name,subtitle:Math.ceil(row.size/1024)+' КБ',file:row.name};});
             if(!items.length){notify('На диске пока нет копий HomeCinema');returnHead();return;}
             Lampa.Select.show({title:'Выберите копию для восстановления',items:items,onBack:cloudMenu,onSelect:function(item){
-                returnHead();cloudInput('Пароль шифрования этой копии',function(password){
-                    request('/cloud/preview.json',{name:item.file,password:password}).then(function(preview){
+                returnHead();
+                function previewCopy(password) {
+                    var payload={name:item.file};
+                    if(typeof password==='string')payload.password=password;
+                    request('/cloud/preview.json',payload).then(function(preview){
+                        if(preview.password_required){
+                            cloudInput('Пароль старой копии (она была создана до входа без пароля)',previewCopy,true);
+                            return;
+                        }
                         Lampa.Select.show({title:'Восстановить '+preview.profiles+' профилей и '+preview.ratings+' оценок?',
                             items:[{title:'Отмена'},{title:'Восстановить копию',restore:true,subtitle:'Текущие данные заменятся. Локальная резервная копия будет сохранена.'}],
                             onBack:cloudMenu,onSelect:function(choice){
                                 returnHead();if(!choice.restore)return;
-                                busy=true; // Keep the old browser state out of the restored database.
+                                busy=true;
                                 request('/cloud/restore.json',{ticket:preview.ticket}).then(function(){window.location.reload();},function(e){busy=false;cloudError(e);});
                             }});
                     }).catch(cloudError);
-                },true);
+                }
+                previewCopy();
             }});
         }).catch(cloudError);
     }
@@ -293,12 +301,9 @@
                 if(item.action==='connect')cloudConnect(status);
                 if(item.action==='restore')sync(false).then(cloudVersions).catch(cloudError);
                 if(item.action==='save')sync(false).then(cloudDeviceSave).then(function(){return request('/cloud/save.json',{});}).then(cloudWait).catch(cloudError);
-                if(item.action==='enable')cloudInput('Придумайте пароль копий (от 12 символов). Сохраните его отдельно!',function(password){
-                    cloudInput('Повторите пароль копий',function(repeat){
-                        if(repeat!==password){notify('Пароли не совпадают');return;}
-                        sync(false).then(cloudDeviceSave).then(function(){return request('/cloud/enable.json',{confirm:'new',password:password});}).then(cloudWait).catch(cloudError);
-                    },true);
-                },true);
+                if(item.action==='enable')sync(false).then(cloudDeviceSave).then(function(){
+                    return request('/cloud/enable.json',{confirm:'new',mode:'yandex'});
+                }).then(cloudWait).catch(cloudError);
                 if(item.action==='disconnect')request('/cloud/disconnect.json',{}).then(function(){notify('Облако отключено; копии на диске сохранены');}).catch(cloudError);
             }});
         }).catch(cloudError);

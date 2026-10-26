@@ -16,6 +16,7 @@ from urllib.request import Request, build_opener, HTTPRedirectHandler
 import zlib
 
 MAGIC = b'HCLOUD1\0'
+AUTO_MAGIC = b'HCLOUD2\0'
 LIMIT = 64 * 1024 * 1024
 ROOT = 'app:/HomeCinema'
 TABLES = ('profiles', 'rating_scale', 'media', 'user_ratings', 'watchlist', 'features',
@@ -100,22 +101,24 @@ def derive(password, salt):
     return hashlib.scrypt(password.encode(), salt=salt, n=32768, r=8, p=1, dklen=32, maxmem=64*1024*1024)
 
 
-def encrypt(document, key, salt):
+def encrypt(document, key, salt, magic=MAGIC):
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
     nonce = secrets.token_bytes(12)
-    header = MAGIC + salt + nonce
+    header = magic + salt + nonce
     raw = json_bytes(document)
     if len(raw) > LIMIT:
         raise CloudError('Снимок превышает 64 МБ')
     return header + AESGCM(key).encrypt(nonce, zlib.compress(raw), header)
 
 
-def decrypt(raw, password):
+def decrypt(raw, password=None, *, auto_key=None):
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-    if len(raw) > LIMIT or len(raw) < 52 or raw[:8] != MAGIC:
+    if len(raw) > LIMIT or len(raw) < 52 or raw[:8] not in (MAGIC, AUTO_MAGIC):
         raise CloudError('Неизвестный формат копии')
     salt, nonce = raw[8:24], raw[24:36]
-    key = derive(password, salt)
+    key = auto_key if raw[:8] == AUTO_MAGIC else derive(password, salt)
+    if not isinstance(key, bytes) or len(key) != 32:
+        raise CloudError('Не удалось получить ключ копии с Яндекс Диска')
     try:
         packed = AESGCM(key).decrypt(nonce, raw[36:], raw[:36])
         stream = zlib.decompressobj()
@@ -325,6 +328,38 @@ class Manager:
         return self.transport('https://cloud-api.yandex.net/v1/disk/resources' + endpoint + '?' + urlencode(params),
             method, headers={'Authorization': 'OAuth ' + self.config['access_token']})
 
+    def auto_key(self, key_id):
+        if not isinstance(key_id, bytes) or len(key_id) != 16:
+            raise CloudError('Неверный идентификатор ключа')
+        name = ROOT + '/key-' + key_id.hex() + '.json'
+        link = self.disk(endpoint='/download', path=name)
+        raw = self.transport(link['href'], binary=True,
+            headers={'Authorization': 'OAuth ' + self.config['access_token']})
+        try:
+            obj = json.loads(raw)
+            key = base64.b64decode(obj['key'], validate=True)
+            if obj['version'] != 1 or obj['id'] != key_id.hex() or len(key) != 32:
+                raise ValueError('key')
+            return key
+        except (ValueError, KeyError, TypeError):
+            raise CloudError('Ключ копии на Диске повреждён') from None
+
+    def enable_auto(self):
+        self.versions()  # Check account and create folder before writing anything.
+        key_id, key = secrets.token_bytes(16), secrets.token_bytes(32)
+        name = ROOT + '/key-' + key_id.hex() + '.json'
+        raw = json_bytes({'version': 1, 'id': key_id.hex(), 'key': base64.b64encode(key).decode()})
+        link = self.disk(endpoint='/upload', path=name, overwrite='false')
+        self.transport(link['href'], 'PUT', raw, {'Content-Type': 'application/json'}, binary=True)
+        # Never replace a previous server's key. Verify the uploaded key before enabling.
+        if not secrets.compare_digest(self.auto_key(key_id), key):
+            raise CloudError('Не удалось подтвердить ключ на Яндекс Диске')
+        self.config.setdefault('instance', secrets.token_hex(16))
+        self.config.update(key=base64.b64encode(key).decode(), salt=base64.b64encode(key_id).decode(),
+                           key_mode='yandex', enabled=True)
+        self.write()
+        self.digest = ''
+
     def versions(self):
         try:
             self.disk('PUT', path=ROOT)
@@ -353,7 +388,8 @@ class Manager:
         fingerprint = hashlib.sha256(json_bytes({k: v for k, v in document.items() if k != 'created_at'})).hexdigest()
         if not force and fingerprint == self.digest:
             return
-        data = encrypt(document, base64.b64decode(self.config['key']), base64.b64decode(self.config['salt']))
+        data = encrypt(document, base64.b64decode(self.config['key']), base64.b64decode(self.config['salt']),
+                       AUTO_MAGIC if self.config.get('key_mode') == 'yandex' else MAGIC)
         name = 'hc-%020d-%s.hcb' % (time.time_ns(), self.config['instance'])
         link = self.disk(endpoint='/upload', path=ROOT + '/' + name, overwrite='false')
         self.transport(link['href'], 'PUT', data, {'Content-Type': 'application/octet-stream'}, binary=True)
@@ -369,16 +405,21 @@ class Manager:
         for row in own[20:]:
             self.disk('DELETE', path=ROOT + '/' + row['name'], permanently='false')
 
-    def preview(self, name, password):
+    def preview(self, name, password=None):
         if not re.fullmatch(r'hc-\d{20}-[a-f0-9]{32}\.hcb', str(name)):
             raise CloudError('Неверное имя копии')
         link = self.disk(endpoint='/download', path=ROOT + '/' + name)
         raw = self.transport(link['href'], binary=True,
             headers={'Authorization': 'OAuth ' + self.config['access_token']})
-        document, key, salt = decrypt(raw, password)
+        if raw[:8] == MAGIC and password is None:
+            self.staged = None
+            return {'password_required': True}
+        auto_key = self.auto_key(raw[8:24]) if raw[:8] == AUTO_MAGIC else None
+        document, key, salt = decrypt(raw, password, auto_key=auto_key)
         valid_devices(document.get('devices', {}))
         token = secrets.token_urlsafe(32)
-        self.staged = (token, time.time() + 300, document, key, salt)
+        self.staged = (token, time.time() + 300, document, key, salt,
+                       'yandex' if raw[:8] == AUTO_MAGIC else 'password')
         profile_table = document['tables'].get('home_profiles', {})
         return {'ticket': token, 'created_at': document['created_at'],
                 'profiles': len(profile_table.get('rows', [])),
@@ -387,7 +428,7 @@ class Manager:
     def apply(self, ticket):
         if not self.staged or not secrets.compare_digest(str(ticket), self.staged[0]) or time.time() > self.staged[1]:
             raise CloudError('Подтверждение истекло; выберите копию снова')
-        _, _, document, key, salt = self.staged
+        _, _, document, key, salt, key_mode = self.staged
         from connections import IMPORT_LOCK
         if not IMPORT_LOCK.acquire(blocking=False):
             raise CloudError('Дождитесь завершения импорта Кинопоиска и повторите восстановление')
@@ -397,7 +438,8 @@ class Manager:
             IMPORT_LOCK.release()
         self.devices = document.get('devices', {})
         private_write(self.root / 'devices.json', json_bytes(self.devices))
-        self.config.update(key=base64.b64encode(key).decode(), salt=base64.b64encode(salt).decode(), enabled=True)
+        self.config.update(key=base64.b64encode(key).decode(), salt=base64.b64encode(salt).decode(),
+                           key_mode=key_mode, enabled=True)
         self.staged = None
         self.write()
         from connections import REFRESH_EVENT
@@ -502,11 +544,11 @@ def handle(handler, factory, owner, root):
                 elif path == '/cloud/enable.json':
                     if payload.get('confirm') != 'new':
                         raise CloudError('Подтвердите начало нового сохранения')
-                    m.versions()  # Check credentials/folder BEFORE enabling automatic writes.
-                    salt = secrets.token_bytes(16)
-                    key = derive(payload.get('password'), salt)
-                    m.config.update(key=base64.b64encode(key).decode(), salt=base64.b64encode(salt).decode(), enabled=True)
-                    m.write()
+                    # The account itself unlocks new copies; no second password.
+                    # Legacy clients must update rather than silently changing protection.
+                    if payload.get('mode') != 'yandex':
+                        raise CloudError('Обновите страницу: новые копии подключаются без отдельного пароля')
+                    m.enable_auto()
                     result = m.run_job(lambda: m.save(True))
                 elif path == '/cloud/save.json':
                     result = m.run_job(lambda: m.save(True))

@@ -88,6 +88,60 @@ class CloudTest(unittest.TestCase):
             key=cloud.base64.b64encode(cloud.derive(self.password,salt)).decode(),
             salt=cloud.base64.b64encode(salt).decode(),enabled=True)
 
+    def test_yandex_only_restore_on_independent_server_and_retention(self):
+        self.m.config.update(access_token='SECRET_TOKEN', expires=10**12)
+        self.m.enable_auto()
+        self.m.save(True)
+        name = self.m.versions()['items'][0]['name']
+        raw = self.disk.files[name]
+        self.assertEqual(raw[:8], cloud.AUTO_MAGIC)
+        self.assertNotIn(b'homecinema_appearance', raw)
+        keys = [k for k in self.disk.files if k.startswith('key-')]
+        self.assertEqual(len(keys), 1)
+        other = cloud.Manager(self.root/'independent-server', self.factory, 'new_owner', self.disk)
+        other.config.update(access_token='OTHER_TOKEN', expires=10**12)
+        preview = other.preview(name)
+        self.assertEqual(preview['ratings'], 1)
+        self.assertNotIn('key', preview)
+        other.apply(preview['ticket'])
+        self.assertEqual(other.config['key_mode'], 'yandex')
+        c = self.factory()
+        self.assertEqual(c.execute("SELECT rating FROM user_ratings WHERE profile_id='new_owner'").fetchone()[0], 8)
+        c.close()
+        self.assertNotIn('SECRET_TOKEN', str(cloud.snapshot(self.factory, 'new_owner', {})))
+        # A new server does not overwrite the original server's key.
+        original = self.disk.files[keys[0]]
+        other.enable_auto()
+        self.assertEqual(self.disk.files[keys[0]], original)
+        self.assertEqual(len([k for k in self.disk.files if k.startswith('key-')]), 2)
+        other.save(True)
+        self.assertNotIn('key-', str(other.versions()['items']))
+        for index in range(22):
+            self.disk.files['hc-%020d-%s.hcb' % (index, other.config['instance'])] = b'old'
+        other.save(True)
+        self.assertTrue(all(k in self.disk.files for k in keys))
+        self.assertNotIn('OTHER_TOKEN', json.dumps(other.status()))
+        self.assertNotIn(other.config['key'], json.dumps(other.status()))
+
+    def test_legacy_password_prompt_and_auto_tampering(self):
+        self.enable()
+        self.m.save(True)
+        name = self.m.versions()['items'][0]['name']
+        self.assertEqual(self.m.preview(name), {'password_required': True})
+        self.assertIsNone(self.m.staged)
+        self.assertEqual(self.m.preview(name, self.password)['ratings'], 1)
+        self.m.enable_auto()
+        self.m.save(True)
+        name = self.m.versions()['items'][0]['name']
+        raw = self.disk.files[name]
+        self.disk.files[name] = raw[:-1] + bytes([raw[-1] ^ 1])
+        with self.assertRaises(cloud.CloudError):self.m.preview(name)
+        self.disk.files[name] = raw
+        key_name = 'key-' + raw[8:24].hex() + '.json'
+        self.disk.files[key_name] = b'{}'
+        with self.assertRaises(cloud.CloudError):self.m.preview(name)
+        self.assertEqual(self.disk.files[key_name], b'{}', 'never silently regenerate a missing/corrupt key')
+
     def test_device_flow_poll_rate_and_no_secret_in_status(self):
         result=self.m.start({'client_id':'c'*32,'client_secret':'s'*32})
         self.assertNotIn('device_code',result)
