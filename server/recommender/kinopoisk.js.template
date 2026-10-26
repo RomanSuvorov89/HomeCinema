@@ -368,8 +368,15 @@
   }
 
   function nativeFavorite(type) {
-    if(!Lampa.Favorite || typeof Lampa.Favorite.get!=='function') return [];
-    return Lampa.Favorite.get({type:type}) || [];
+    if(!Lampa.Favorite || typeof Lampa.Favorite.get!=='function' || !window.appready) return [];
+    // Native get() assumes the category exists and calls ids.forEach directly.
+    // Different Lampa builds expose different categories (e.g. scheduled).
+    // full() supplies the native build's actual category map, without saving it.
+    var favorites=typeof Lampa.Favorite.full==='function' ? Lampa.Favorite.full() :
+      Lampa.Storage.get('favorite', {});
+    if(!favorites || !Array.isArray(favorites[type])) return [];
+    var cards=Lampa.Favorite.get({type:type});
+    return Array.isArray(cards) ? cards : [];
   }
 
   var watchDisplayCards=[];
