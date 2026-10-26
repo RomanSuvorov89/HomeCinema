@@ -198,6 +198,38 @@ class CloudTest(unittest.TestCase):
         self.assertEqual(connections.read(c,'new_owner','new_owner')['kp_id'],'123456')
         c.close()
 
+    def test_legacy_migration_column_order_restores_by_name(self):
+        document = cloud.snapshot(self.factory, 'owner', {})
+        # ALTER TABLE on an old installation appends columns, while a fresh
+        # schema declares them in their logical positions. Exercise every table,
+        # including profile_id remapping, not only media.
+        for table in document['tables'].values():
+            order = list(reversed(range(len(table['columns']))))
+            table['columns'] = [table['columns'][i] for i in order]
+            table['rows'] = [[row[i] for i in order] for row in table['rows']]
+        cloud.restore(self.factory, document, 'new_owner', self.root/'backups')
+        c = self.factory()
+        self.assertEqual(c.execute('SELECT title FROM media WHERE kp_id=42').fetchone()[0], 'Сериал')
+        self.assertEqual(c.execute("SELECT rating FROM user_ratings WHERE profile_id='new_owner'").fetchone()[0], 8)
+        self.assertEqual(connections.read(c, 'new_owner', 'new_owner')['kp_id'], '123456')
+        c.close()
+
+    def test_missing_duplicate_and_unknown_columns_preserve_existing_data(self):
+        original = cloud.snapshot(self.factory, 'owner', {})
+        for kind in ('missing', 'duplicate', 'unknown'):
+            document = copy.deepcopy(original)
+            table = document['tables']['media']
+            if kind == 'missing':
+                table['columns'].pop()
+                for row in table['rows']:row.pop()
+            elif kind == 'duplicate':table['columns'][-1] = table['columns'][0]
+            else:table['columns'][-1] = 'unknown_column'
+            with self.subTest(kind=kind), self.assertRaises(cloud.CloudError):
+                cloud.restore(self.factory, document, 'owner', self.root/'backups')
+            c = self.factory()
+            self.assertEqual(c.execute('SELECT rating FROM user_ratings').fetchone()[0], 8)
+            c.close()
+
     def test_corrupt_relations_rollback(self):
         document=cloud.snapshot(self.factory,'owner',{})
         index=document['tables']['user_ratings']['columns'].index('kp_id')

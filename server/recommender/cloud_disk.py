@@ -187,22 +187,31 @@ def restore(factory, document, owner, backup_dir):
         ensure_schema(c)
         connections_ensure(c)
         # Archive columns/SQL are never executed. Only known local schema names are used.
-        prepared = {}
+        prepared, restore_columns = {}, {}
         for name, table in tables.items():
             columns = [r[1] for r in c.execute('PRAGMA table_info("' + name + '")')]
-            if not columns or table.get('columns') != columns:
-                raise CloudError('Версия базы отличается: ' + name + '. Сначала обновите HomeCinema.')
+            incoming = table.get('columns')
+            if not isinstance(incoming, list) or any(not isinstance(v, str) for v in incoming):
+                raise CloudError('Неверные столбцы копии: ' + name)
+            if not columns or len(incoming) != len(set(incoming)) or set(incoming) != set(columns):
+                missing = ', '.join(sorted(set(columns) - set(incoming)))
+                extra = ', '.join(sorted(set(incoming) - set(columns)))
+                raise CloudError('Несовместимая структура базы: ' + name +
+                    ('; отсутствуют в копии: ' + missing if missing else '') +
+                    ('; неизвестны на сервере: ' + extra if extra else ''))
+            restore_columns[name] = columns
+            positions = [incoming.index(column) for column in columns]
             rows = table.get('rows')
             if not isinstance(rows, list) or any(not isinstance(r, list) or len(r) != len(columns)
                     or any(not isinstance(v, (str, int, float, type(None))) for v in r) for r in rows):
                 raise CloudError('Неверные строки копии')
-            prepared[name] = [list(r) for r in rows]
+            prepared[name] = [[r[i] for i in positions] for r in rows]
             if 'profile_id' in columns:
                 index = columns.index('profile_id')
                 for row in prepared[name]:
                     if row[index] == document['owner']:
                         row[index] = owner
-        ids = [r[tables['profiles']['columns'].index('profile_id')] for r in prepared['profiles']]
+        ids = [r[restore_columns['profiles'].index('profile_id')] for r in prepared['profiles']]
         if owner not in ids or len(ids) != len(set(ids)):
             raise CloudError('Конфликт идентификаторов профилей')
         # Save a full local SQLite backup BEFORE any destructive operation.
@@ -220,8 +229,9 @@ def restore(factory, document, owner, backup_dir):
                 c.execute('DELETE FROM "' + name + '"')
         for name in TABLES:
             if name in prepared:
-                marks = ','.join('?' for _ in tables[name]['columns'])
-                c.executemany('INSERT INTO "' + name + '" VALUES(' + marks + ')', prepared[name])
+                marks = ','.join('?' for _ in restore_columns[name])
+                names = ','.join('"' + column + '"' for column in restore_columns[name])
+                c.executemany('INSERT INTO "' + name + '" (' + names + ') VALUES(' + marks + ')', prepared[name])
         c.execute('CREATE TABLE IF NOT EXISTS home_restore_meta(epoch TEXT NOT NULL)')
         c.execute('DELETE FROM home_restore_meta')
         c.execute('INSERT INTO home_restore_meta VALUES(?)', (secrets.token_hex(16),))
