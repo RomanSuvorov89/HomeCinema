@@ -25,7 +25,7 @@ function Native(object){
  this.setFilterData=filter=>{values.torrents_filter_data[this.cardID()]=filter;values.torrents_filter=filter;};
 }
 registry.torrents=Native;values.torrents_filter_data={};
-const ctx={window:{},document:{body:new Element(),head:{appendChild:s=>styles.push(s)},createElement:()=>new Element(),querySelectorAll:()=>cards},
+const ctx={window:{appready:true},document:{body:new Element(),head:{appendChild:s=>styles.push(s)},createElement:()=>new Element(),querySelectorAll:()=>cards},
  reviewForCard:card=>card.review||{},ratingKey:card=>String(card.id),cacheGet:()=>null,data:null,
  Lampa:{Head:{title:value=>header=value},Lang:{translate:()=> 'Главная'},Storage:{get:(k,d)=>values[k]||d,set:(k,v)=>{writes++;values[k]=v;},listener:{follow:(key,fn)=>events.storage=fn}},
  Favorite:{get:({type})=>favorites[type]||[]},Timeline:{watched:card=>card.progress||{}},

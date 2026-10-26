@@ -372,26 +372,45 @@
     return Lampa.Favorite.get({type:type}) || [];
   }
 
-  function combinedWatchCards(cards, catalog) {
+  var watchDisplayCards=[];
+  function watchCardVisible(card, catalog, viewed) {
     catalog=catalog || (typeof data!=='undefined' && data) || {};
+    viewed=viewed || nativeFavorite('viewed');
+    var review=reviewForCard(card) || {}, cached=cacheGet(ratingKey(card)) || {};
+    if(Number(review.my_rating || cached.my_rating || card.my_rating ||
+        (card.roman_review && card.roman_review.my_rating))>0) return false;
+    if((catalog.ratings || []).some(function(item){return sameHomeCard(card,item);}) ||
+        viewed.some(function(item){return sameHomeCard(card,item);})) return false;
+    if(review.feedback==='seen' || review.feedback==='not_interested') return false;
+    var tv=card.media_type==='tv' || card.original_name || card.first_air_date || card.name;
+    // Timeline methods exist before Timeline.init(), but their internal viewed
+    // map does not. The app-ready event is emitted after native initialization.
+    if(!tv && Lampa.Timeline && window.appready && typeof Lampa.Timeline.watched==='function') {
+      var progress=Lampa.Timeline.watched(card,true);
+      if(progress && Number(progress.percent)>=90) return false;
+    }
+    return true;
+  }
+
+  function combinedWatchCards(cards, catalog) {
     var planned=nativeFavorite('wath').concat(nativeFavorite('scheduled'));
-    var viewed=nativeFavorite('viewed'), rated=catalog.ratings || [];
-    var result=[];
+    var viewed=nativeFavorite('viewed'), result=[];
     (cards || []).concat(planned).forEach(function(card) {
-      var review=reviewForCard(card) || {}, cached=cacheGet(ratingKey(card)) || {};
-      if(Number(review.my_rating || cached.my_rating || card.my_rating ||
-          (card.roman_review && card.roman_review.my_rating))>0) return;
-      if(rated.some(function(item){return sameHomeCard(card,item);}) ||
-          viewed.some(function(item){return sameHomeCard(card,item);})) return;
-      if(review.feedback==='seen' || review.feedback==='not_interested') return;
-      var tv=card.media_type==='tv' || card.original_name || card.first_air_date || card.name;
-      if(!tv && Lampa.Timeline && typeof Lampa.Timeline.watched==='function') {
-        var progress=Lampa.Timeline.watched(card,true);
-        if(progress && Number(progress.percent)>=90) return;
-      }
-      if(!result.some(function(old){return sameHomeCard(old,card);})) result.push(card);
+      if(watchCardVisible(card,catalog,viewed) && !result.some(function(old){return sameHomeCard(old,card);})) result.push(card);
     });
-    return filterReleaseCards(result);
+    return filterReleaseCards(result).map(function(card){
+      var display=Object.assign({},card);
+      watchDisplayCards.push(display);
+      if(watchDisplayCards.length>1000) watchDisplayCards.shift();
+      return display;
+    });
+  }
+
+  function refreshWatchCards() {
+    Array.prototype.forEach.call(document.querySelectorAll('.card'),function(element){
+      if(element.card_data && watchDisplayCards.indexOf(element.card_data)>=0)
+        element.classList.toggle('homecinema-watch-completed',!watchCardVisible(element.card_data));
+    });
   }
 
   var continueDisplayCards=[];
@@ -421,7 +440,7 @@
     var now=new Date(),today=now.getFullYear()+'-'+('0'+(now.getMonth()+1)).slice(-2)+'-'+('0'+now.getDate()).slice(-2);
     // A stored schedule stops proving completion when its next episode is due.
     if(release.next_air_date && release.next_air_date<=today) return false;
-    if(!Lampa.Timeline) return false;
+    if(!Lampa.Timeline || !window.appready) return false;
     var percent=0;
     if(typeof Lampa.Timeline.watchedEpisode==='function')
       percent=Number(Lampa.Timeline.watchedEpisode(card,release.season,release.episode));
@@ -480,7 +499,7 @@
     var style=document.createElement('style');
     style.textContent='.head .full--screen{display:none!important}'+
       'body.homecinema-main .head__backward{display:none!important}'+
-      '.card.homecinema-caught-up{display:none!important}'+
+      '.card.homecinema-caught-up,.card.homecinema-watch-completed{display:none!important}'+
       '.homecinema-known-episode .card-watched{display:none!important}'+
       '.homecinema-last-episode{position:absolute;bottom:.45em;left:.45em;right:.45em;padding:.5em .4em;'+
       'border-radius:.7em;background:rgba(10,12,18,.82);color:#fff;font-size:.7em;line-height:1.35;pointer-events:none}';
@@ -496,10 +515,15 @@
     updateHeader();
     if(Lampa.Storage.listener) Lampa.Storage.listener.follow('change',function(e) {
       if(e.name==='online_watched_last') Array.prototype.forEach.call(document.querySelectorAll('.card'),drawLastHomeEpisode);
-      if(/^(online_watched_last|file_view(?:_|$)|timetable)/.test(e.name)) refreshContinueCards();
+      if(/^(online_watched_last|file_view(?:_|$)|timetable)/.test(e.name)) {refreshContinueCards();refreshWatchCards();}
+      if(e.name==='favorite') refreshWatchCards();
     });
-    if(Lampa.Timeline && Lampa.Timeline.listener) Lampa.Timeline.listener.follow('update',refreshContinueCards);
-    if(Lampa.Listener) Lampa.Listener.follow('state:changed',function(e){if(e.target==='timeline')refreshContinueCards();});
+    function refreshPlaybackRows() {refreshContinueCards();refreshWatchCards();}
+    if(Lampa.Timeline && Lampa.Timeline.listener) Lampa.Timeline.listener.follow('update',refreshPlaybackRows);
+    if(Lampa.Listener) {
+      Lampa.Listener.follow('state:changed',function(e){if(e.target==='timeline')refreshPlaybackRows();});
+      Lampa.Listener.follow('app',function(e){if(e.type==='ready')refreshPlaybackRows();});
+    }
     // Native fallback includes the previous show's season. Only per-card values
     // created with the corrected policy may carry a season; migrate old filters once.
     var Native=Lampa.Component.get && Lampa.Component.get('torrents');
