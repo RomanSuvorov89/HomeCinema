@@ -84,7 +84,7 @@ elif [[ "$*" == *"rev-parse"* ]]; then echo aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 fi
 echo "git $*" >> "$TEST_LOG"
 ''')
-            script('python3','if [[ "$1" == *preflight-ports.py ]]; then exit 0; fi\nexec "$TEST_PYTHON" "$@"\n')
+            script('python3','if [[ "$1" == *preflight-ports.py || "$1" == *check-lampa-web.py ]]; then exit 0; fi\nexec "$TEST_PYTHON" "$@"\n')
             for name in ('pacman','apt-get','systemctl','usermod'):script(name,'echo "'+name+' $*" >> "$TEST_LOG"\n')
             script('sudo','exec "$@"\n')
             script('docker', '''echo "docker $*" >> "$TEST_LOG"
@@ -93,7 +93,17 @@ if [[ "$1" == cp ]]; then
 elif [[ "$1" == create ]]; then echo temporary-id;
 fi
 ''')
-            script('curl','echo \'{"ok":true,"database":true}\'\n')
+            script('curl', '''if [[ "$*" == *codeload.github.com* ]]; then
+  while [[ "$1" != -o ]]; do shift; done
+  shift
+  "${TEST_PYTHON}" - "$1" <<'END'
+import sys,zipfile
+with zipfile.ZipFile(sys.argv[1],'w') as z:
+    base='lampa-0f50f0c4cb3f602ecaff84925dca07f96bbd38a8/'
+    for name,text in {'index.html':'<html><body></body></html>','app.min.js':'app','css/app.css':'body{}'}.items():z.writestr(base+name,text)
+END
+else echo '{"ok":true,"database":true}'; fi
+''')
             env=dict(os.environ,PATH=str(bin_dir)+':'+os.environ['PATH'],HC_INSTALL_DIR=str(target),HC_PUBLIC_HOST='cinema.home',TEST_PYTHON=sys.executable,TEST_REPOSITORY=str(ROOT),TEST_LOG=str(directory/'commands.log'))
             result=subprocess.run(['bash',str(ROOT/'install.sh')],env=env,capture_output=True,text=True,timeout=40)
             self.assertEqual(result.returncode,0,result.stdout+result.stderr)

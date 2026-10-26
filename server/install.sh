@@ -155,8 +155,14 @@ for source_path in /lampac/module/LampaWeb/plugins/lampainit.js /lampac/Modules/
   fi
 done
 [[ "$extracted" == 1 ]] || { echo "Lampac layout changed: lampainit.js not found"; exit 1; }
+for source_path in /lampac/module/LampaWeb/ModInit.cs /lampac/Modules/LampaWeb/ModInit.cs; do
+  if "${DOCKER[@]}" cp "$TEMP_CONTAINER:$source_path" "$ROOT/data/lampac/LampaWeb.ModInit.cs" 2>/dev/null; then
+    break
+  fi
+done
 "${DOCKER[@]}" rm "$TEMP_CONTAINER" >/dev/null
 trap - EXIT
+python3 "$ROOT/../scripts/prepare-lampa-web.py" "$ROOT/data/lampac/lampa-main" "$ROOT/data/lampac/LampaWeb.ModInit.cs"
 
 python3 "$ROOT/scripts/render.py"
 "${COMPOSE[@]}" --env-file "$ROOT/.runtime.env" -f "$ROOT/docker-compose.yml" pull torrserver
@@ -164,7 +170,7 @@ python3 "$ROOT/scripts/render.py"
 
 echo "Waiting for services..."
 for _ in {1..60}; do
-  if curl -fsS --connect-timeout 2 --max-time 5 "http://127.0.0.1:${LAMPAC_PORT:-9118}/version?type=hash" >/dev/null 2>&1 &&
+  if python3 "$ROOT/../scripts/check-lampa-web.py" "http://127.0.0.1:${LAMPAC_PORT:-9118}" >/dev/null 2>&1 &&
      curl -fsS --connect-timeout 2 --max-time 5 "http://127.0.0.1:${RECOMMENDER_PORT:-9120}/health" >/dev/null 2>&1 &&
      curl -fsS --connect-timeout 2 --max-time 5 "http://127.0.0.1:${POSTER_PORT:-9121}/health" >/dev/null 2>&1; then
     echo "Installation completed: $PUBLIC_LAMPAC_URL"

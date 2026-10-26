@@ -8,6 +8,7 @@ bash -n install.sh
 python3 scripts/test_one_command.py
 python3 scripts/test_portable.py
 python3 scripts/test_image_permissions.py
+python3 scripts/test_lampa_web.py
 python3 scripts/test_actions_install.py
 python3 scripts/test_profiles_install.py
 python3 scripts/test_apple_theme.py

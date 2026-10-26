@@ -12,6 +12,7 @@ services:
       - ./data/lampac/passwd:/lampac/passwd
       - ./data/lampac/init.conf:/lampac/init.conf
       - ./data/lampac/lampainit.js:/lampac/plugins/override/lampainit.js
+      - ./data/lampac/lampa-main:/lampac/wwwroot/lampa-main
       - ./data/lampac/cache:/lampac/cache
       - ./data/lampac/database:/lampac/database
     networks:
