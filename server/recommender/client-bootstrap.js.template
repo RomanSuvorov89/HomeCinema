@@ -56,7 +56,9 @@
                     var external = android && Lampa.Storage && Lampa.Storage.get('player_torrent','android') === 'android';
                     var skipGst = external && /\/(?:gst\.js|gst\/tracks\.js)(?:[?#]|$)/.test(url);
                     if (skipGst) report('external player','Skip browser GStreamer: '+url);
-                    if (own(url) || skipGst) {if(success) success(url);return false;}return true;});
+                    var legacySync = window.HomeCinemaProfiles && window.HomeCinemaProfiles.ownsHistory &&
+                        /\/(?:sync|bookmark|timecode)(?:\.js|\/js\/)/.test(String(url));
+                    if (own(url) || skipGst || legacySync) {if(success) success(url);return false;}return true;});
                 if (!pending.length) {if (complete) complete();return;}
                 if (!android) return original.call(Lampa.Utils,pending,complete,error,success,logs);
                 var left = pending.length;

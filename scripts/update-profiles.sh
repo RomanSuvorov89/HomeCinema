@@ -18,7 +18,7 @@ python3 "$WORK/apply.py" "$TARGET" "$LAMPAINIT" "$REF"
 cd "$TARGET"
 docker compose build "$SERVICE"
 # Tests create temporary databases; the working profile and history are not modified.
-docker compose run --rm --no-deps --entrypoint python "$SERVICE" -m unittest test_profiles test_cloud_disk
+docker compose run --rm --no-deps --entrypoint python "$SERVICE" -m unittest test_profiles test_cloud_disk test_cloud_hourly
 # Activate only after the new image has passed its profile tests.
 docker compose up -d "$SERVICE"
 docker compose exec -T "$SERVICE" python -c '

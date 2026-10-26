@@ -3,7 +3,7 @@ RUN apk add --no-cache curl
 WORKDIR /app
 COPY requirements-cloud.txt /app/requirements-cloud.txt
 RUN pip install --no-cache-dir -r /app/requirements-cloud.txt
-COPY cloud_disk.py connections.py test_cloud_disk.py /app/
+COPY cloud_disk.py cloud_sync.py connections.py test_cloud_disk.py test_cloud_hourly.py /app/
 COPY kp_sync.py profiles.py test_profiles.py /app/
 COPY episode_schedule.py /app/episode_schedule.py
 COPY kinoafisha.py /app/kinoafisha.py

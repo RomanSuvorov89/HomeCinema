@@ -36,3 +36,10 @@ ctx.Lampa.Noty.show({text:'Ошибка воспроизведения'});
 assert.equal(notices.length,3,'errors, explicit action confirmations and structured notices remain available');
 assert.equal(notices[0].context,receiver);assert.equal(notices[0].args[1],options);
 console.log('Quiet startup: only plugin success muted, localized message handled, errors/options/receiver preserved; late CUB Halloween button hidden with scoped CSS passed');
+
+ctx.HomeCinemaProfiles={ownsHistory:true};scripts=[];
+let legacyDone=0,legacySuccess=0;
+ctx.Lampa.Utils.putScriptAsync(['http://server:9118/sync/js/family','http://server:9118/bookmark.js','http://server:9118/timecode/js/family','http://server:9118/other.js'],()=>legacyDone++,()=>{throw Error('unexpected plugin error');},()=>legacySuccess++);
+assert.equal(scripts.length,1,'profile synchronization excludes legacy whole-history plugins');
+assert.equal(legacySuccess,3);scripts[0].onload();assert.equal(legacyDone,1);
+console.log('Profiles own history: legacy sync/bookmark/timecode excluded; unrelated loaders and callbacks preserved');

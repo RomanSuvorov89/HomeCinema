@@ -92,6 +92,7 @@
     }
     function finish() {
         ready=true;
+        window.sync_disable=true; // Profile records own history; stop legacy whole-snapshot exports.
         callbacks.splice(0).forEach(function (fn) {fn();});
         bindButtons();
     }
@@ -141,15 +142,17 @@
                 if (!active || active.id !== id) return;
                 // Changes made while the request was in flight remain dirty for the next save.
                 var now=capture();
-                var changedFavorite=false, changedTheme=false;
+                var changedFavorite=false, changedTheme=false, changedTimeline=false;
                 Object.keys(state.values).forEach(function (key) {
                     if (fields.indexOf(key)!==-1 && equal(now[key],before[key]) && !equal(now[key],state.values[key])) {
                         write(key,state.values[key]);
                         if(key==='favorite') changedFavorite=true;
+                        if(key==='file_view') changedTimeline=true;
                         if(key==='homecinema_appearance') changedTheme=true;
                     }
                 });
                 if(changedFavorite && Lampa.Favorite) {if(Lampa.Favorite.read) Lampa.Favorite.read(true);else Lampa.Favorite.init();}
+                if(changedTimeline && window.appready && Lampa.Timeline && typeof Lampa.Timeline.read==='function') Lampa.Timeline.read();
                 if(changedTheme && window.HomeCinemaAppleTheme) HomeCinemaAppleTheme.setEnabled(state.values.homecinema_appearance==='apple');
                 baseline=clone(state.values);
                 persist(baseKey(id),baseline);
@@ -249,11 +252,11 @@
         });
     }
     function cloudWait() {
-        notify('Сохраняем в облако…');
+        notify('Сравниваем и объединяем настройки с Яндекс Диском…');
         var tries=0;
         var id=setInterval(function(){
             request('/cloud/status.json').then(function(status){
-                if(!status.busy){clearInterval(id);notify(status.error || 'Копия сохранена на Яндекс Диске');}
+                if(!status.busy){clearInterval(id);notify(status.error || (status.last_result==='unchanged'?'Настройки актуальны — новая версия не создавалась':'Синхронизация завершена; новая версия сохранена'));}
                 else if(++tries>120){clearInterval(id);notify('Операция продолжается; состояние доступно в меню облака');}
             }).catch(function(e){clearInterval(id);cloudError(e);});
         },2000);
@@ -291,7 +294,7 @@
             if(!status.connected)items.push({title:'Подключить Яндекс Диск',action:'connect',subtitle:'Нужны ClientID и Client secret своего приложения. Инструкция: docs/CLOUD.md в HomeCinema.'});
             else {
                 items.push({title:'Восстановить из облачной копии',action:'restore'});
-                if(status.enabled)items.push({title:'Сохранить сейчас',action:'save',subtitle:status.busy?'Операция выполняется':status.error || (status.last_save?'Последняя копия: '+new Date(status.last_save*1000).toLocaleString():'Ожидаем первую копию')});
+                if(status.enabled)items.push({title:'Синхронизировать сейчас',action:'save',subtitle:status.busy?'Операция выполняется':status.error || ('Проверка раз в час'+(status.last_sync?' · '+new Date(status.last_sync*1000).toLocaleString():''))});
                 else items.push({title:'Начать новое облачное сохранение',action:'enable',subtitle:'Создаст отдельные копии этого сервера. Старые копии останутся.'});
                 items.push({title:'Переподключить Яндекс Диск',action:'connect'});
                 items.push({title:'Отключить облако',action:'disconnect',subtitle:'Файлы на Яндекс Диске останутся'});
@@ -499,7 +502,7 @@
         style.textContent='.homecinema-profile{position:relative}.homecinema-profile.focus:after,.homecinema-profile.hover:after{background:#f5f5f7;color:#111319}.homecinema-profile:after{content:attr(data-homecinema-profile);position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:#242733;border-radius:50%;font-size:.8em;font-weight:600}.head .homecinema-bell{position:relative;overflow:visible}.head .homecinema-bell:after{display:none!important}.head .homecinema-bell .homecinema-bell-count{position:absolute;right:-.3em;top:-.3em;min-width:1.5em;height:1.5em;line-height:1.5em;text-align:center;padding:0 .25em;box-sizing:border-box;background:#e85959;color:#fff;border-radius:1em;font-size:.5em;font-weight:600;pointer-events:none;transform:none!important;animation:none!important;transition:none!important}.head .homecinema-bell:not(.homecinema-unread) .homecinema-bell-count{display:none}';
         document.head.appendChild(style);
     }
-    window.HomeCinemaProfiles={whenReady:function (fn) {if(ready) fn();else callbacks.push(fn);},
+    window.HomeCinemaProfiles={ownsHistory:true,whenReady:function (fn) {if(ready) fn();else callbacks.push(fn);},
         apiBase:function () {return active ? base+'/p/'+encodeURIComponent(active.id) : base;},
         menu:menu, save:function () {return sync(false);}, capture:capture, switchTo:switchTo};
     start();

@@ -28,7 +28,7 @@ def apply(target, lampainit, ref):
     base=match[1]
     if not re.fullmatch(r'https?://[^\s\x22\x27\\]+',base):raise ValueError('Invalid existing URL')
     names=['kp_sync.py','profiles.py','profiles-client.js.template','kinopoisk.js.template',
-           'client-bootstrap.js.template','install.py','test_profiles.py','facts.py','cloud_disk.py','connections.py','requirements-cloud.txt','test_cloud_disk.py','home_cache.py','review_api.py']
+           'client-bootstrap.js.template','install.py','test_profiles.py','facts.py','cloud_disk.py','cloud_sync.py','connections.py','requirements-cloud.txt','test_cloud_disk.py','test_cloud_hourly.py','home_cache.py','review_api.py']
     with tempfile.TemporaryDirectory() as temp:
         work=Path(temp)
         for name in names:
@@ -63,13 +63,15 @@ def apply(target, lampainit, ref):
             destination=name.removesuffix('.template')
             changes[target/destination]=(work/name).read_text().replace('__RECOMMENDER_PUBLIC_URL__',base)
         docker=(target/'Dockerfile').read_text()
-        for name in ('profiles.py','profiles-client.js','test_profiles.py','facts.py','cloud_disk.py','connections.py','requirements-cloud.txt','test_cloud_disk.py'):
+        for name in ('profiles.py','profiles-client.js','test_profiles.py','facts.py','cloud_disk.py','cloud_sync.py','connections.py','requirements-cloud.txt','test_cloud_disk.py','test_cloud_hourly.py'):
             if not re.search(r'^COPY\s+[^\n]*\b'+re.escape(name)+r'\b',docker,re.M):
                 anchor='WORKDIR /app'
                 if anchor not in docker:raise ValueError('Unsupported Dockerfile')
                 docker=docker.replace(anchor,anchor+'\nCOPY '+name+' /app/'+name,1)
         if 'pip install --no-cache-dir -r /app/requirements-cloud.txt' not in docker:
             docker += '\nRUN pip install --no-cache-dir -r /app/requirements-cloud.txt\n'
+        if 'RUN chmod -R a+rX /app' not in docker:
+            docker += '\nRUN chmod -R a+rX /app\n'
         changes[target/'Dockerfile']=docker
         # Keep configured DNS service names; initial defaults must not erase a restored address.
         defaults_path=target/'client-defaults.js'

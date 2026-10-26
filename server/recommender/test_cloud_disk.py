@@ -269,13 +269,13 @@ class CloudTest(unittest.TestCase):
             self.disk.files['hc-%020d-%s.hcb' % (index+10,'a'*32)]=b'old'
         self.m.save(True)
         rows=self.m.versions()['items']
-        self.assertEqual(len([r for r in rows if r['name'].endswith('a'*32+'.hcb')]),20)
+        self.assertEqual(len([r for r in rows if r['name'].endswith('a'*32+'.hcb')]),3)
         self.assertIn(foreign,self.disk.files)
         restarted=cloud.Manager(self.root/'cloud',self.factory,'owner',self.disk)
         self.assertTrue(restarted.status()['connected'])
         count=len(self.disk.files)
         restarted.save()
-        self.assertEqual(len(self.disk.files),count,'five minute delay survives restart')
+        self.assertEqual(len(self.disk.files),count,'hourly delay survives restart')
         restarted.start({'client_id':'c'*32,'client_secret':'s'*32})
         self.assertFalse(restarted.status()['connected'])
         self.assertFalse(restarted.status()['enabled'],'reconnect cannot write to another account implicitly')

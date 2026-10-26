@@ -116,7 +116,7 @@ def decrypt(raw, password=None, *, auto_key=None):
     if len(raw) > LIMIT or len(raw) < 52 or raw[:8] not in (MAGIC, AUTO_MAGIC):
         raise CloudError('Неизвестный формат копии')
     salt, nonce = raw[8:24], raw[24:36]
-    key = auto_key if raw[:8] == AUTO_MAGIC else derive(password, salt)
+    key = auto_key if auto_key is not None else (None if raw[:8] == AUTO_MAGIC else derive(password, salt))
     if not isinstance(key, bytes) or len(key) != 32:
         raise CloudError('Не удалось получить ключ копии с Яндекс Диска')
     try:
@@ -147,16 +147,18 @@ def valid_devices(value):
     return value
 
 
-def snapshot(factory, owner, devices):
-    c = factory()
+def snapshot(factory, owner, devices, connection=None):
+    c = connection if connection is not None else factory()
     try:
         from connections import ensure
-        ensure(c)
+        if connection is None:
+            ensure(c)
         # Preserve the legacy implicit KP source even when owner IDs change on a new server.
-        if owner.isdigit():
+        if connection is None and owner.isdigit():
             with c:
                 c.execute('INSERT OR IGNORE INTO home_connections(profile_id,kp_id) VALUES(?,?)', (owner, owner))
-        c.execute('BEGIN')  # One consistent WAL read snapshot, including all personal tables.
+        if connection is None:
+            c.execute('BEGIN')  # One consistent WAL read snapshot, including all personal tables.
         existing = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         tables = {}
         for name in TABLES:
@@ -166,7 +168,8 @@ def snapshot(factory, owner, devices):
         return {'version': 1, 'owner': owner, 'created_at': int(time.time()), 'tables': tables,
                 'devices': devices}
     finally:
-        c.close()
+        if connection is None:
+            c.close()
 
 
 def restore(factory, document, owner, backup_dir):
@@ -258,6 +261,7 @@ class Manager:
         self.devices = self.read('devices.json', {})
         self.last_save = 0
         self.digest = ''
+        self.sync_cache = self.read('hourly-sync.json', {})
 
     def read(self, name, default):
         try:
@@ -276,7 +280,8 @@ class Manager:
         return {'needs_setup': self.owner.startswith('local_') and not self.config.get('enabled', False),
                     'configured': bool(self.config.get('client_id')), 'connected': bool(self.config.get('access_token')),
                     'enabled': self.config.get('enabled', False), 'busy': self.job,
-                    'last_save': self.config.get('last_save', 0), 'error': self.last_error,
+                    'last_save': self.config.get('last_save', 0), 'last_sync': self.config.get('last_sync', 0),
+                    'interval_seconds': 3600, 'last_result': self.config.get('last_result', ''), 'error': self.last_error,
                     'awaiting_choice': bool(self.config.get('access_token')) and not self.config.get('enabled', False)}
 
     def start(self, payload):
@@ -289,6 +294,8 @@ class Manager:
         if result.get('error'):
             raise CloudError('Яндекс не разрешил вход: ' + result['error'])
         self.config.update(client_id=client, client_secret=secret, enabled=False)
+        self.sync_cache = {}
+        private_write(self.root / 'hourly-sync.json', json_bytes(self.sync_cache))
         for field in ('access_token', 'refresh_token', 'expires'):
             self.config.pop(field, None)
         self.config.setdefault('instance', secrets.token_hex(16))
@@ -369,6 +376,8 @@ class Manager:
                            key_mode='yandex', enabled=True)
         self.write()
         self.digest = ''
+        self.sync_cache = {}
+        private_write(self.root / 'hourly-sync.json', json_bytes(self.sync_cache))
 
     def versions(self):
         try:
@@ -389,31 +398,122 @@ class Manager:
                 raise CloudError('Слишком много файлов копий')
         return {'items': sorted(entries, key=lambda r: r['name'], reverse=True)}
 
+    def sync_document(self, name):
+        link = self.disk(endpoint='/download', path=ROOT + '/' + name)
+        raw = self.transport(link['href'], binary=True,
+            headers={'Authorization': 'OAuth ' + self.config['access_token']})
+        if raw[:8] == AUTO_MAGIC:
+            key = self.auto_key(raw[8:24])
+        elif raw[:8] == MAGIC and base64.b64encode(raw[8:24]).decode() == self.config.get('salt'):
+            key = base64.b64decode(self.config['key'])
+        else:
+            return None  # Older password-only archives remain available for manual restore.
+        return decrypt(raw, auto_key=key)[0]
+
     def save(self, force=False):
-        if not force and time.time() - self.config.get("last_save", 0) < 300:
+        import cloud_sync as sync
+        now = int(time.time())
+        # A manual request runs now, but still never creates an identical version.
+        if not force and now - self.config.get('last_check', self.config.get('last_save', 0)) < 3600:
             return
         if not self.config.get('enabled'):
             raise CloudError('Сначала выберите восстановление или начало нового сохранения')
-        document = snapshot(self.factory, self.owner, self.devices)
-        fingerprint = hashlib.sha256(json_bytes({k: v for k, v in document.items() if k != 'created_at'})).hexdigest()
-        if not force and fingerprint == self.digest:
-            return
-        data = encrypt(document, base64.b64decode(self.config['key']), base64.b64decode(self.config['salt']),
-                       AUTO_MAGIC if self.config.get('key_mode') == 'yandex' else MAGIC)
-        name = 'hc-%020d-%s.hcb' % (time.time_ns(), self.config['instance'])
-        link = self.disk(endpoint='/upload', path=ROOT + '/' + name, overwrite='false')
-        self.transport(link['href'], 'PUT', data, {'Content-Type': 'application/octet-stream'}, binary=True)
-        meta = self.disk(path=ROOT + '/' + name)
-        if meta.get('size') != len(data) or meta.get('md5') != hashlib.md5(data).hexdigest():
-            raise CloudError('Не удалось подтвердить целостность загруженной копии')
-        self.config['last_save'] = int(time.time())
-        self.digest = fingerprint
+        self.config['last_check'] = now
+        self.write()
+        versions = self.versions()['items']
+        known = {r['name']:self.sync_cache.get('known', {})[r['name']] for r in versions
+                 if r['name'] in self.sync_cache.get('known', {})}
+        records = self.sync_cache.get('records', {})
+        sync.validate(records)
+        remote_documents = []
+        observed = self.sync_cache.get('observed')
+        legacy_observed = dict(self.sync_cache.get('legacy_observed', {}))
+        latest_by_writer = {}
+        for item in versions:
+            latest_by_writer.setdefault(item['name'][-36:-4], item['name'])
+        for row in versions:
+            if row['name'] in known:
+                continue
+            document = self.sync_document(row['name'])
+            state = document.get('cloud_sync', {}) if document else {}
+            if state:
+                if state.get('version') != 1:
+                    raise CloudError('Неподдерживаемая версия синхронизации')
+                incoming = sync.validate(state['records'])
+                records = sync.join(records, incoming)
+                known[row['name']] = sync.digest(incoming)
+                remote_documents.append(document)
+                if observed is None and row['name'] == latest_by_writer.get(self.config['instance']):
+                    observed = sync.project(document)
+            elif document and row['name'] == latest_by_writer.get(row['name'][-36:-4]):
+                # Upgrade old full snapshots using only the newest per writer.
+                # Compare with that writer's previous projection to retain deletions.
+                writer = row['name'][-36:-4]
+                projection = sync.project(document)
+                incoming, _ = sync.observe(records, legacy_observed.get(writer, {}), projection,
+                    writer, 0, now=int(row['name'][3:23]) // 1000000)
+                records = sync.join(records, incoming)
+                known[row['name']] = sync.digest(incoming)
+                legacy_observed[writer] = projection
+                remote_documents.append(document)
+                if observed is None and writer == self.config['instance']:
+                    observed = projection
+            else:
+                known[row['name']] = ''
+        from connections import IMPORT_LOCK
+        if not IMPORT_LOCK.acquire(blocking=False):
+            raise CloudError('Импорт Кинопоиска занят; синхронизация повторится в следующем цикле')
+        c = self.factory()
+        try:
+            # HTTP clients that save during cloud downloads are included here.
+            # Their SQLite writes either precede this transaction or wait for it.
+            c.execute('BEGIN IMMEDIATE')
+            local_document = snapshot(self.factory, self.owner, self.devices, connection=c)
+            current = sync.project(local_document)
+            records, counter = sync.observe(records, observed or {}, current,
+                self.config['instance'], self.sync_cache.get('counter', 0))
+            live = {k:r['value'] for k,r in records.items() if not r['deleted']}
+            devices = self.devices
+            if live != current:
+                devices = sync.apply(c, self.owner, records, remote_documents + [local_document])
+            document = snapshot(self.factory, self.owner, devices, connection=c)
+            document['cloud_sync'] = {'version': 1, 'records': records}
+            c.commit()
+        except Exception:
+            c.rollback()
+            raise
+        finally:
+            c.close()
+            IMPORT_LOCK.release()
+        self.devices = devices
+        private_write(self.root / 'devices.json', json_bytes(devices))
+        fingerprint = sync.digest(records)
+        self.sync_cache = {'records': records, 'observed': sync.project(document), 'counter': counter,
+                           'known': {r['name']:known[r['name']] for r in versions if r['name'] in known},
+                           'legacy_observed': legacy_observed}
+        # Persist merge clocks/tombstones even after a failed upload or process restart.
+        private_write(self.root / 'hourly-sync.json', json_bytes(self.sync_cache))
+        uploaded = fingerprint not in known.values()
+        if uploaded:
+            data = encrypt(document, base64.b64decode(self.config['key']), base64.b64decode(self.config['salt']),
+                           AUTO_MAGIC if self.config.get('key_mode') == 'yandex' else MAGIC)
+            name = 'hc-%020d-%s.hcb' % (time.time_ns(), self.config['instance'])
+            link = self.disk(endpoint='/upload', path=ROOT + '/' + name, overwrite='false')
+            self.transport(link['href'], 'PUT', data, {'Content-Type': 'application/octet-stream'}, binary=True)
+            meta = self.disk(path=ROOT + '/' + name)
+            if meta.get('size') != len(data) or meta.get('md5') != hashlib.md5(data).hexdigest():
+                raise CloudError('Не удалось подтвердить целостность загруженной копии')
+            self.config['last_save'] = now
+            self.sync_cache['known'][name] = fingerprint
+            private_write(self.root / 'hourly-sync.json', json_bytes(self.sync_cache))
+            # Three rollback versions per writer. Keys and other writers are untouched.
+            own = [r for r in self.versions()['items'] if r['name'].endswith(self.config['instance'] + '.hcb')]
+            for row in own[3:]:
+                self.disk('DELETE', path=ROOT + '/' + row['name'], permanently='false')
+        self.config['last_result'] = 'uploaded' if uploaded else 'unchanged'
+        self.config['last_sync'] = now
         self.last_error = ''
         self.write()
-        # Retention affects only THIS server, never the other house's copies.
-        own = [r for r in self.versions()['items'] if r['name'].endswith(self.config['instance'] + '.hcb')]
-        for row in own[20:]:
-            self.disk('DELETE', path=ROOT + '/' + row['name'], permanently='false')
 
     def preview(self, name, password=None):
         if not re.fullmatch(r'hc-\d{20}-[a-f0-9]{32}\.hcb', str(name)):
@@ -450,6 +550,11 @@ class Manager:
         private_write(self.root / 'devices.json', json_bytes(self.devices))
         self.config.update(key=base64.b64encode(key).decode(), salt=base64.b64encode(salt).decode(),
                            key_mode=key_mode, enabled=True)
+        import cloud_sync
+        current = snapshot(self.factory, self.owner, self.devices)
+        self.sync_cache = {'records': document.get('cloud_sync', {}).get('records', {}),
+                           'observed': cloud_sync.project(current), 'known': {}, 'counter': 0}
+        private_write(self.root / 'hourly-sync.json', json_bytes(self.sync_cache))
         self.staged = None
         self.write()
         from connections import REFRESH_EVENT
