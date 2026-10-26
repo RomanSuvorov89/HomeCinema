@@ -76,6 +76,17 @@ class WebTest(unittest.TestCase):
                 (root / 'index.html').write_text((ui / 'index.html').read_text())
                 (root / 'lampainit.js').write_text('plugin fixture')
                 health.check(base)
+                expected=root/'expected.js'
+                marker='/* homecinema-build:'+'a'*64+' */'
+                expected.write_text(marker+'\nnew script')
+                with self.assertRaisesRegex(ValueError,'previous or different'):
+                    health.check(base,expected)
+                (root/'lampainit.js').write_text(marker+'\nserved script')
+                health.check(base,expected)
+                # A new file on disk must not be mistaken for an activated response.
+                expected.write_text('/* homecinema-build:'+'b'*64+' */\nnext script')
+                with self.assertRaisesRegex(ValueError,'previous or different'):
+                    health.check(base,expected)
                 (ui / 'app.min.js').unlink()
                 with self.assertRaises(HTTPError):health.check(base)
             finally:

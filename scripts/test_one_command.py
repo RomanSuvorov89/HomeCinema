@@ -120,6 +120,9 @@ else echo '{"ok":true,"database":true}'; fi
             self.assertIn('checkout --detach aaaaaaaaaa',commands)
             self.assertTrue(list((target/'server/backups').glob('home-cinema-backup-*.tar.gz')))
             self.assertIn('up -d --build',commands)
+            deploy=[line for line in commands.splitlines() if 'up -d --build' in line or 'restart lampac' in line]
+            self.assertEqual(len(deploy),4)
+            self.assertTrue(all('up -d --build' in deploy[i] and 'restart lampac' in deploy[i+1] for i in (0,2)),deploy)
             self.assertNotIn(' down',commands)
             self.assertNotIn('volume rm',commands)
 

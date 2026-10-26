@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Render central plugins from configured public LAN addresses; no runtime databases."""
+import hashlib
 import importlib.util
 import json
 import os
@@ -89,6 +90,8 @@ def render():
         prefix = load('set-apple-theme').bundle(PROJECT) + prefix
     prefix = '/* homecinema-profiles:start */\n' + rendered['profiles-client.js'] + '\n/* homecinema-profiles:end */\n' + prefix
     result = prefix + text + '\n' + (ROOT / 'templates/mpv-bridge.js').read_text() + '\n'
+    build = hashlib.sha256(result.encode('utf-8')).hexdigest()
+    result = '/* homecinema-build:' + build + ' */\n' + result
     for name, body in rendered.items():
         (rec / name).write_text(body,encoding='utf-8')
     if target.exists() and target.read_text() != result:

@@ -167,10 +167,13 @@ python3 "$ROOT/../scripts/prepare-lampa-web.py" "$ROOT/data/lampac/lampa-main" "
 python3 "$ROOT/scripts/render.py"
 "${COMPOSE[@]}" --env-file "$ROOT/.runtime.env" -f "$ROOT/docker-compose.yml" pull torrserver
 "${COMPOSE[@]}" --env-file "$ROOT/.runtime.env" -f "$ROOT/docker-compose.yml" up -d --build
+# Bind-mounted JS content does not change Compose service configuration.
+# Restart AFTER rendering so Lampac drops its in-memory script/response cache.
+"${COMPOSE[@]}" --env-file "$ROOT/.runtime.env" -f "$ROOT/docker-compose.yml" restart lampac
 
 echo "Waiting for services..."
 for _ in {1..60}; do
-  if python3 "$ROOT/../scripts/check-lampa-web.py" "http://127.0.0.1:${LAMPAC_PORT:-9118}" >/dev/null 2>&1 &&
+  if python3 "$ROOT/../scripts/check-lampa-web.py" "http://127.0.0.1:${LAMPAC_PORT:-9118}" "$ROOT/data/lampac/lampainit.js" >/dev/null 2>&1 &&
      curl -fsS --connect-timeout 2 --max-time 5 "http://127.0.0.1:${RECOMMENDER_PORT:-9120}/health" >/dev/null 2>&1 &&
      curl -fsS --connect-timeout 2 --max-time 5 "http://127.0.0.1:${POSTER_PORT:-9121}/health" >/dev/null 2>&1; then
     echo "Installation completed: $PUBLIC_LAMPAC_URL"
