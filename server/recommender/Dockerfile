@@ -18,6 +18,9 @@ COPY client-defaults.js /app/client-defaults.js
 COPY kinopoisk.js profiles-client.js /app/
 COPY schema.sql /app/schema.sql
 COPY RECOMMENDER.md /app/RECOMMENDER.md
+# Sources may be 0600 after installation with umask 077.
+# Only application code is public inside the image; mounted data stays private.
+RUN chmod -R a+rX /app
 ENV SERVE=1 DATA_FILE=/data/kinopoisk.json REFRESH_SECONDS=86400
 EXPOSE 9120
 CMD ["python", "/app/kp_sync.py"]
