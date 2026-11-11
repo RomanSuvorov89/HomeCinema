@@ -32,11 +32,9 @@ if [[ -e "$TARGET" ]]; then
   # Keep the prior source reachable even when switching detached commits.
   git -C "$TARGET" update-ref "refs/homecinema/backups/$STAMP" "$PREVIOUS"
   if [[ -f "$TARGET/server/.runtime.env" ]]; then
-    if docker info >/dev/null 2>&1; then
-      bash "$TARGET/server/backup.sh"
-    else
-      root_run bash "$TARGET/server/backup.sh"
-    fi
+    # Docker group access does not grant access to root-owned private backups
+    # or service files. Archive with admin rights independently of Docker access.
+    root_run bash "$TARGET/server/backup.sh"
   fi
   # No force/reset: Git also refuses untracked files that would be overwritten.
   git -C "$TARGET" checkout --detach "$CANDIDATE"

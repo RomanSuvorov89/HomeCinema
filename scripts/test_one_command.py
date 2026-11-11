@@ -86,7 +86,10 @@ echo "git $*" >> "$TEST_LOG"
 ''')
             script('python3','if [[ "$1" == *preflight-ports.py || "$1" == *check-lampa-web.py ]]; then exit 0; fi\nexec "$TEST_PYTHON" "$@"\n')
             for name in ('pacman','apt-get','systemctl','usermod'):script(name,'echo "'+name+' $*" >> "$TEST_LOG"\n')
-            script('sudo','exec "$@"\n')
+            # Docker is reachable without sudo, but private archives still need
+            # elevation. Simulate this user independently of the test runner UID.
+            script('id','if [[ "$*" == -u ]]; then echo 1000; else command -p id "$@"; fi\n')
+            script('sudo','echo "sudo $*" >> "$TEST_LOG"\nexec "$@"\n')
             script('docker', '''echo "docker $*" >> "$TEST_LOG"
 if [[ "$1" == cp ]]; then
   echo 'function start() { var plugins_add = {initiale}; }' > "$3"
@@ -117,6 +120,8 @@ else echo '{"ok":true,"database":true}'; fi
             commands=(directory/'commands.log').read_text()
             self.assertIn('fetch origin main',commands)
             self.assertIn('update-ref refs/homecinema/backups/',commands)
+            self.assertIn('sudo bash '+str(target/'server/backup.sh'),commands,
+                          'Docker access must not bypass administrative backup rights')
             self.assertIn('checkout --detach aaaaaaaaaa',commands)
             self.assertTrue(list((target/'server/backups').glob('home-cinema-backup-*.tar.gz')))
             self.assertIn('up -d --build',commands)
@@ -159,8 +164,9 @@ cp "$ROOT/server/data/private" "$ROOT/server/backups/private"
                 HC_LAMPAINIT=str(base/'lampainit.js'),HC_PUBLIC_HOST='cinema.home',TEST_LOG=str(base/'version'),
                 GIT_CONFIG_COUNT='1',GIT_CONFIG_KEY_0='url.'+origin.as_uri()+'/.insteadOf',
                 GIT_CONFIG_VALUE_0='https://github.com/RomanSuvorov89/HomeCinema.git')
-            # Only Docker privilege detection is stubbed; clone, fetch, checkout and refs are real Git.
+            # Administrative calls are stubbed; clone, fetch, checkout and refs are real Git.
             bin_dir=base/'bin';bin_dir.mkdir();docker=bin_dir/'docker';docker.write_text('#!/bin/sh\nexit 0\n');docker.chmod(0o755)
+            sudo=bin_dir/'sudo';sudo.write_text('#!/bin/sh\nexec "$@"\n');sudo.chmod(0o755)
             env['PATH']=str(bin_dir)+':'+env['PATH']
             def run():return subprocess.run(['bash',str(ROOT/'install.sh')],env=env,capture_output=True,text=True,timeout=15)
             first=run();self.assertEqual(first.returncode,0,first.stdout+first.stderr)
