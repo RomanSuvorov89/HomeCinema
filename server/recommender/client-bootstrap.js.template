@@ -16,6 +16,53 @@
         } catch (_) {}
     }
     window.romanClientReport = report;
+    /* homecinema-local-reactions:start */
+    function localReactions() {
+        if (!Lampa.Utils || typeof Lampa.Utils.imgLoad !== 'function' || Lampa.Utils.imgLoad.homecinemaReactions) return;
+        // These five decorative icons belong to the client. Do not fetch them
+        // through CUB: its image endpoint can return an HTML 403 response.
+        var drawings = {
+            fire: '<path fill="#ff9838" d="M16 2C18 10 28 12 28 21a12 12 0 0 1-24 0c0-6 4-10 7-13-1 6 1 8 3 9 3-4 4-8 2-15Z"/><path fill="#ffe399" d="M17 15c0 5 6 6 6 10a7 7 0 0 1-14 0c0-3 2-6 4-7-1 4 1 5 2 5 2-2 3-5 2-8Z"/>',
+            nice: '<path fill="#ffd16b" stroke="#d99536" stroke-width="1.5" stroke-linejoin="round" d="M11 27H5V14h6Zm1-12 5-7V3c5 0 6 5 4 10h5c3 0 3 3 2 6l-2 8H12Z"/>',
+            think: '<circle cx="16" cy="16" r="14" fill="#ffd16b"/><path d="m7 10 5-1m8 0 5 2M11 22l10-2" fill="none" stroke="#654421" stroke-width="2" stroke-linecap="round"/><circle cx="11" cy="14" r="1.6" fill="#654421"/><circle cx="22" cy="15" r="1.6" fill="#654421"/><path d="m14 29 2-9c1-3 4-2 3 1l-1 4 7-2c3 0 3 3 0 4l-5 3Z" fill="#ffe3a3" stroke="#d99536"/>',
+            bore: '<circle cx="16" cy="16" r="14" fill="#a8bbd2"/><path d="M7 12h6m6 0h6M11 23h10" fill="none" stroke="#35465e" stroke-width="2.3" stroke-linecap="round"/>',
+            shit: '<path fill="#ad7753" d="M18 2c4 7-2 7 2 10 7-1 10 5 5 8 8 0 9 10 1 10H6c-8 0-6-10 1-10-5-4-1-9 4-8-3-5 6-5 7-10Z"/><ellipse cx="12" cy="20" rx="3" ry="4" fill="white"/><ellipse cx="21" cy="20" rx="3" ry="4" fill="white"/><circle cx="12" cy="21" r="1.5" fill="#33251d"/><circle cx="21" cy="21" r="1.5" fill="#33251d"/><path d="M13 26q4 3 8 0" fill="none" stroke="#33251d" stroke-width="1.5" stroke-linecap="round"/>'
+        };
+        var icons = {};
+        Object.keys(drawings).forEach(function (type) {
+            icons[type] = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(
+                '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">' + drawings[type] + '</svg>');
+        });
+        function icon(url) {
+            var match = String(url || '').match(/\/img\/reactions\/(fire|nice|think|bore|shit)\.svg(?:[?#].*)?$/);
+            return match && icons[match[1]];
+        }
+        var original = Lampa.Utils.imgLoad;
+        Lampa.Utils.imgLoad = function (image, src, onload, onerror) {
+            return original.call(this, image, icon(src) || src, onload, onerror);
+        };
+        Lampa.Utils.imgLoad.homecinemaReactions = true;
+        // The reaction picker uses raw <img src>, not Utils.imgLoad.
+        function repair(root) {
+            if (!root || root.nodeType !== 1) return;
+            function replace(image) {
+                var source = icon(image.getAttribute('src'));
+                if (source) image.setAttribute('src', source);
+            }
+            if (root.tagName === 'IMG') replace(root);
+            Array.prototype.forEach.call(root.querySelectorAll('img'), replace);
+        }
+        repair(document.body);
+        if (window.MutationObserver) {
+            new MutationObserver(function (records) {
+                records.forEach(function (record) {
+                    if (record.type === 'attributes') repair(record.target);
+                    else Array.prototype.forEach.call(record.addedNodes, repair);
+                });
+            }).observe(document.body, {childList:true, subtree:true, attributes:true, attributeFilter:['src']});
+        }
+    }
+    /* homecinema-local-reactions:end */
     window.addEventListener('error', function (e) {
         report('error', (e.message || 'Resource failed') + ' ' + (e.filename || (e.target && e.target.src) || '') + ':' + (e.lineno || '') + ' ' + (e.error && e.error.stack || ''));
     }, true);
@@ -86,7 +133,7 @@
         });
     }
     function boot() {
-        if (window.Lampa && document.body) {quietStartup();wrapLoaders();}
+        if (window.Lampa && document.body) {quietStartup();localReactions();wrapLoaders();}
         if (!(window.Lampa && Lampa.Storage && Lampa.Platform && Lampa.Component && Lampa.Listener && Lampa.Api && Lampa.Api.sources && Lampa.Api.sources.cub && document.body)) {
             if(Date.now()-started < 15000) setTimeout(boot,20);
             else report('bootstrap','Lampa API not ready');
