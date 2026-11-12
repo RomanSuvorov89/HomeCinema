@@ -9,6 +9,7 @@ python3 scripts/test_one_command.py
 python3 scripts/test_portable.py
 python3 scripts/test_image_permissions.py
 python3 scripts/test_lampa_web.py
+node scripts/test_lampa_card_metadata.cjs
 python3 scripts/test_actions_install.py
 python3 scripts/test_profiles_install.py
 python3 scripts/test_apple_theme.py
@@ -17,5 +18,5 @@ node scripts/test_prefetch.cjs
 node scripts/test_family_watch.cjs
 (cd server/recommender && KINOPOISK_PROFILE_ID=1234567 python3 -m unittest discover -p 'test_*.py')
 (cd server/recommender && for file in test_*.cjs; do node "$file"; done)
-(cd server/poster-cache && python3 -m unittest test_server test_kinoafisha_posters && node test_plugin.cjs && node test_series_dom.cjs)
+(cd server/poster-cache && python3 -m unittest test_server test_kinoafisha_posters test_tmdb_metadata && node test_plugin.cjs && node test_series_dom.cjs)
 echo 'All checks passed'

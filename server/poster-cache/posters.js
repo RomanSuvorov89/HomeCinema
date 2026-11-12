@@ -138,8 +138,10 @@
             var previousApi=Lampa.TMDB.api;
             var apiHandler=function (path) {
                 var match=String(path || '').match(/^(?:3\/)?tv\/([1-9][0-9]{0,9})\/season\/([0-9]{1,3})(?:\?(.*))?$/);
-                if (!match) return previousApi.apply(this,arguments);
-                return base+'/tmdb/season/'+match[1]+'/'+Number(match[2])+'.json'+(match[3] ? '?'+match[3] : '');
+                if (match) return base+'/tmdb/season/'+match[1]+'/'+Number(match[2])+'.json'+(match[3] ? '?'+match[3] : '');
+                var metadata=String(path || '').match(/^(?:3\/)?((?:tv|movie|collection)\/[1-9][0-9]{0,9}(?:\/(?:credits|recommendations|similar|videos))?)(?:\?(.*))?$/);
+                if (metadata && index.metadata_cards) return base+'/tmdb/metadata/'+metadata[1]+(metadata[2] ? '?'+metadata[2] : '');
+                return previousApi.apply(this,arguments);
             };
             apiHandler.homecinemaSeasonCache=true;
             Lampa.TMDB.api=apiHandler;

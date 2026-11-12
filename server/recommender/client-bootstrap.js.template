@@ -16,6 +16,54 @@
         } catch (_) {}
     }
     window.romanClientReport = report;
+    /* homecinema-card-metadata:start */
+    function localMetadataCards() {
+        // CUB's client-side block list gates metadata cards before the catalog
+        // request. Use the native switch, including for late-loaded clients.
+        window.lampa_settings = window.lampa_settings || {};
+        window.lampa_settings.disable_features = window.lampa_settings.disable_features || {};
+        window.lampa_settings.disable_features.dmca = true;
+        window.lampa_settings.dcma = [];
+        if (!(window.Lampa && Lampa.Utils && typeof Lampa.Utils.dcma === 'function') ||
+            Lampa.Utils.dcma.homecinemaMetadataCards) return;
+        // A /blocked request already in flight can repopulate the native list.
+        // The public metadata gate must remain open after that late response.
+        Lampa.Utils.dcma = function () { return false; };
+        Lampa.Utils.dcma.homecinemaMetadataCards = true;
+    }
+    function metadataFallback() {
+        if (!(window.Lampa && Lampa.Api && typeof Lampa.Api.full === 'function' &&
+              Lampa.Api.sources && Lampa.Api.sources.tmdb && typeof Lampa.Api.sources.tmdb.full === 'function') ||
+              Lampa.Api.full.homecinemaMetadataFallback) return;
+        var original = Lampa.Api.full;
+        Lampa.Api.full = function (params, complete, error) {
+            var receiver = this;
+            return original.call(receiver,params,function (data) {
+                if (!(data && data.movie && data.movie.blocked) ||
+                    !/^(cub|tmdb)$/.test(params.source || 'cub')) return complete(data);
+                var fallback = Object.assign({},params,{source:'tmdb'});
+                var settled = false;
+                var timer = setTimeout(function () { fail({timeout:true}); },20000);
+                function fail(reason) {
+                    if (settled) return;
+                    settled = true; clearTimeout(timer);
+                    if (error) error(reason);
+                }
+                return Lampa.Api.sources.tmdb.full(fallback,function (result) {
+                    if (settled) return;
+                    if (!(result && result.movie && String(result.movie.id) === String(params.id) && !result.movie.blocked)) return fail();
+                    settled = true; clearTimeout(timer);
+                    var prior = params.card || {};
+                    if (prior.kinopoisk_id && !result.movie.kinopoisk_id) result.movie.kinopoisk_id = prior.kinopoisk_id;
+                    complete(result);
+                },fail);
+            },error);
+        };
+        Lampa.Api.full.homecinemaMetadataFallback = true;
+    }
+    localMetadataCards();
+    metadataFallback();
+    /* homecinema-card-metadata:end */
     /* homecinema-local-reactions:start */
     function localReactions() {
         if (!Lampa.Utils || typeof Lampa.Utils.imgLoad !== 'function' || Lampa.Utils.imgLoad.homecinemaReactions) return;
@@ -133,7 +181,7 @@
         });
     }
     function boot() {
-        if (window.Lampa && document.body) {quietStartup();localReactions();wrapLoaders();}
+        if (window.Lampa && document.body) {localMetadataCards();metadataFallback();quietStartup();localReactions();wrapLoaders();}
         if (!(window.Lampa && Lampa.Storage && Lampa.Platform && Lampa.Component && Lampa.Listener && Lampa.Api && Lampa.Api.sources && Lampa.Api.sources.cub && document.body)) {
             if(Date.now()-started < 15000) setTimeout(boot,20);
             else report('bootstrap','Lampa API not ready');

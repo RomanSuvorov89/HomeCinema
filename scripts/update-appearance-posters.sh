@@ -12,7 +12,7 @@ BASE="https://raw.githubusercontent.com/RomanSuvorov89/HomeCinema/$REF"
 fetch() { curl -fsSL --connect-timeout 5 --max-time 30 "$BASE/$1" -o "$WORK/$2"; }
 fetch scripts/apply-home-actions.py apply-actions.py
 fetch scripts/set-apple-theme.py set-apple-theme.py
-for name in server.py kinoafisha_posters.py posters.js Dockerfile; do
+for name in server.py kinoafisha_posters.py tmdb_metadata.py posters.js Dockerfile; do
   fetch "server/poster-cache/$name" "$name"
 done
 python3 - "$WORK" <<'PY'
@@ -27,7 +27,7 @@ test -f "$POSTERS/.env"
 test -f "$POSTERS/install.py"
 test -w "$LAMPAINIT"
 STAMP="$(date +%Y%m%d-%H%M%S)"
-for name in server.py kinoafisha_posters.py posters.js Dockerfile; do
+for name in server.py kinoafisha_posters.py tmdb_metadata.py posters.js Dockerfile; do
   if [[ -f "$POSTERS/$name" ]]; then cp -a "$POSTERS/$name" "$POSTERS/$name.before-appearance-$STAMP"; fi
   cp "$WORK/$name" "$POSTERS/$name"
 done

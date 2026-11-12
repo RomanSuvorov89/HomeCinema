@@ -14,6 +14,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs, urlencode
 from kinoafisha_posters import KinoafishaPosters
+from tmdb_metadata import TmdbMetadata
 from urllib.request import urlopen
 
 CACHE = Path(os.environ.get('POSTER_CACHE', '/data/posters'))
@@ -412,6 +413,7 @@ class Catalog:
 POSTERS = None
 TMDB_IMAGES = None
 TMDB_SEASONS = None
+TMDB_METADATA = None
 CATALOG_INDEX = Catalog()
 
 
@@ -451,6 +453,19 @@ class Handler(BaseHTTPRequestHandler):
                        'tmdb_seasons_saved': len(list(TMDB_SEASONS.root.glob('*.json'))) if TMDB_SEASONS else 0,
                        'catalog_errors': CATALOG_INDEX.snapshot()['errors']}
             self.send(200, json.dumps(payload).encode(), 'application/json')
+        elif path.startswith('/tmdb/metadata/'):
+            resource = path[len('/tmdb/metadata/'):]
+            query = parse_qs(urlsplit(self.path).query)
+            try:
+                payload = TMDB_METADATA.get(resource, query.get('api_key',[''])[0],
+                    query.get('language',['ru-RU'])[0], query.get('append_to_response',[''])[0],
+                    query.get('include_image_language',[''])[0])
+                self.send(200, json.dumps(payload,ensure_ascii=False).encode(),
+                          'application/json; charset=utf-8','private, max-age=300')
+            except ValueError:
+                self.send(400,b'{"error":"Invalid metadata request"}','application/json')
+            except Exception:
+                self.send(502,b'{"error":"TMDB metadata unavailable"}','application/json')
         elif re.fullmatch(r'/tmdb/season/[1-9][0-9]{0,9}/[0-9]{1,3}\.json', path):
             parts = path.split('/')
             query = parse_qs(urlsplit(self.path).query)
@@ -477,7 +492,7 @@ class Handler(BaseHTTPRequestHandler):
                 print('tmdb unavailable:', image_path, flush=True)
                 self.send(502, b'TMDB image unavailable', 'text/plain')
         elif path == '/index.json':
-            self.send(200, json.dumps(CATALOG_INDEX.snapshot()).encode(), 'application/json')
+            self.send(200, json.dumps(dict(CATALOG_INDEX.snapshot(), metadata_cards=True)).encode(), 'application/json')
         elif re.fullmatch(r'/series/kp/[1-9][0-9]{0,9}\.json', path):
             try:
                 payload = series_metadata(path.rsplit('/', 1)[1][:-5])
@@ -502,5 +517,6 @@ if __name__ == '__main__':
     POSTERS = Posters(CACHE)
     TMDB_IMAGES = TmdbImages(CACHE / "tmdb")
     TMDB_SEASONS = TmdbSeasons(CACHE / "tmdb-seasons")
+    TMDB_METADATA = TmdbMetadata(CACHE / "tmdb-metadata")
     threading.Thread(target=CATALOG_INDEX.run, daemon=True).start()
     ThreadingHTTPServer(('0.0.0.0', 9121), Handler).serve_forever()

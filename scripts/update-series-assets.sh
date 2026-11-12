@@ -8,7 +8,7 @@ LAMPAINIT="${4:-/home/romans/lampac/plugins/lampainit.js}"
 [[ "$REF" =~ ^[a-f0-9]{40}$ ]] || { echo 'Invalid commit SHA'; exit 1; }
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
-for name in server.py posters.js; do
+for name in server.py tmdb_metadata.py posters.js Dockerfile; do
   curl -fsSL --connect-timeout 5 --max-time 30 \
     "https://raw.githubusercontent.com/RomanSuvorov89/HomeCinema/$REF/server/poster-cache/$name" -o "$WORK/$name"
 done
@@ -23,8 +23,8 @@ test -f "$POSTERS/install.py"
 test -f "$POSTERS/kinoafisha_posters.py"
 test -w "$LAMPAINIT"
 STAMP="$(date +%Y%m%d-%H%M%S)"
-for name in server.py posters.js; do
-  cp -a "$POSTERS/$name" "$POSTERS/$name.before-series-assets-$STAMP"
+for name in server.py tmdb_metadata.py posters.js Dockerfile; do
+  if [[ -f "$POSTERS/$name" ]]; then cp -a "$POSTERS/$name" "$POSTERS/$name.before-series-assets-$STAMP"; fi
   cp "$WORK/$name" "$POSTERS/$name"
 done
 cd "$POSTERS"
