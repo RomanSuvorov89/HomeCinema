@@ -149,7 +149,7 @@ class Posters:
                 raise
 
 
-TMDB_PATH = re.compile(r't/p/(?:original|[wh][1-9][0-9]{1,3})/[A-Za-z0-9_-]{1,200}\.(?:jpg|jpeg|png|webp)')
+TMDB_PATH = re.compile(r't/p/(?:original|[wh][1-9][0-9]{1,3}|w90_and_h90_face|w276_and_h350_face)/[A-Za-z0-9_-]{1,200}\.(?:jpg|jpeg|png|webp)')
 
 
 class TmdbImages(Posters):

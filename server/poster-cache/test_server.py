@@ -238,6 +238,20 @@ class TestTmdbCache(unittest.TestCase):
                 self.assertEqual(other.get_image('t/p/w300/frame.jpg'),(png(),'image/png',True))
                 fetch.assert_not_called()
 
+    def test_native_person_face_crops_are_cached_without_changing_dimensions(self):
+        with tempfile.TemporaryDirectory() as root:
+            cache=server.TmdbImages(root)
+            with patch.object(cache,'download',return_value=png()) as fetch:
+                for size in ('w90_and_h90_face','w276_and_h350_face'):
+                    path='t/p/'+size+'/person.jpg'
+                    self.assertEqual(cache.get_image(path)[0],png())
+                    self.assertEqual(fetch.call_args.args[0],'https://nl.imagetmdb.com/'+path)
+                    self.assertTrue(cache.get_image(path)[2])
+                self.assertEqual(fetch.call_count,2)
+                for bad in ('t/p/w276_and_h350_face/../../secret.jpg','t/p/w1_and_h9999_face/person.jpg'):
+                    with self.assertRaises(ValueError):cache.get_image(bad)
+                self.assertEqual(fetch.call_count,2)
+
     def test_partial_mirror_download_is_discarded_and_next_mirror_is_saved(self):
         with tempfile.TemporaryDirectory() as root:
             cache=server.TmdbImages(root)

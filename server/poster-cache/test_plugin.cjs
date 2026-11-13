@@ -125,3 +125,12 @@ intervals[0]();
 assert.equal(context.Lampa.TMDB.api('tv/85552/season/0?api_key='+apiKey),'http://server:9121/tmdb/season/85552/0.json?api_key='+apiKey,'late plugin cannot restore the broken season route');
 assert.equal(context.Lampa.TMDB.api('search/tv?query=Euphoria'),'late-api:search/tv?query=Euphoria');
 console.log('Season API: localized metadata routes, specials and late plugins passed.');
+
+// Native people cards request face crops, not ordinary poster widths.
+for(const size of ['w90_and_h90_face','w276_and_h350_face']) {
+ assert.equal(context.Lampa.TMDB.image('t/p/'+size+'/person.jpg'),
+   'http://server:9121/tmdb/image/t/p/'+size+'/person.jpg');
+}
+assert.equal(context.Lampa.TMDB.image('t/p/w276_and_h350_face/../../secret.jpg'),
+ 'late:t/p/w276_and_h350_face/../../secret.jpg');
+console.log('Native person thumbnails and portraits use the exact face crop through the local cache');
