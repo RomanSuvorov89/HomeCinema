@@ -1032,8 +1032,6 @@
       var next;
       function normalize(rows) {
         var ordered=orderHomeRows(rows);
-        if(manualContinueCards().length && !ordered.some(function(row){return homeRowKind(row)==='continue';}))
-          ordered.unshift({title:'Продолжить просмотр',url:'continue',source:'cub',results:[],page:1});
         return ordered.map(function(row) {
           row=Object.assign({},row,{results:filterReleaseCards(row.results)});
           var kind=homeRowKind(row);

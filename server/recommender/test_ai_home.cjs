@@ -3,8 +3,9 @@ const source=fs.readFileSync('kinopoisk.js','utf8');
 const filters=source.slice(source.indexOf('  var homeFeedbackRevision'),source.indexOf('  function openReviewList('));
 const code=source.slice(source.indexOf('  function sameHomeCard('),source.indexOf('  var data = null;'));
 const upstream=fs.readFileSync('tests/fixtures/lampa-home-upstream.js','utf8');
-async function run(fail=false) {
+async function run(fail=false,pinned=false) {
  let pushed,opened=0,requestCount=0; const persisted={};
+ if(pinned) persisted.homecinema_continue_v1={'tmdb:tv:555':{pinned:true,until:0,card:{id:555,name:'Pinned',media_type:'tv',source:'cub'}}};
  const titles={title_latest:'Последнее добавление',title_fire:'Огонь!',title_now_watch:'Сейчас смотрят',
    title_recomend_watch:'Рекомендуем посмотреть',title_trailers:'Трейлеры',title_new:'Новинки',title_in_high_quality:'В высоком качестве'};
  const year=new Date().getFullYear();
@@ -51,7 +52,9 @@ async function run(fail=false) {
  assert.deepEqual(Array.from(all.slice(0,expected.length),r=>r.title),expected.filter(t=>t!=='Рекомендуем посмотреть'));
  assert(!all.some(r=>/TV Series I Have Seen/.test(r.title)),'remove remote collection rows from every page');
  assert.equal(all.filter(r=>r.title==='Огонь!').length,1);
- if(!fail){const resume=all.find(r=>r.title==='Продолжить просмотр');assert.deepEqual(Array.from(resume.results,c=>c.id),[101,999]);}
+ assert.equal(all.filter(r=>ctx.homeRowKind(r)==='continue').length,1,'only one continue group across ALL native pagination batches');
+ if(pinned) assert.equal(all.flatMap(r=>r.results).filter(c=>c.id===555).length,1,'manual series is added only to the existing continue group');
+ if(!fail){const resume=all.find(r=>r.title==='Продолжить просмотр');assert.deepEqual(Array.from(resume.results,c=>c.id),pinned?[555,101,999]:[101,999]);}
  assert.equal(all.filter(r=>r.title==='Буду смотреть').length,fail?0:1);
  assert(all.some(r=>r.title==='action'));assert(all.some(r=>r.title==='comedy'));
  if(!fail){all[1].params.emit.onlyMore();assert.equal(opened,1);}
@@ -89,4 +92,4 @@ async function run(fail=false) {
  for(const title of ['Трейлеры - Новинки','Трейлеры — Новинки','#{title_trailers} - Новинки','UHD','TV Series I Have Seen 8','TV Series I Have Seen 4']) assert(ctx.hiddenHomeRow({title}));
  assert.equal(ctx.filterReleaseCards(['TS','HDTS','CAMRip','HDCAM','TC','DVDSCR','WEB-DL','WEBRip','BDRip','4K',''].map(quality=>({quality}))).length,5);
 }
-(async()=>{await run();await run(true);console.log('CUB: order, trailers, pagination; warm AND empty cache with stalled requests: first Continue Watching <250ms; late rows retained: passed');})().catch(e=>{console.error(e);process.exitCode=1;});
+(async()=>{await run();await run(true);await run(false,true);await run(true,true);console.log('CUB: order, trailers, pagination; warm AND empty cache with stalled requests: first Continue Watching <250ms; late rows retained: passed');})().catch(e=>{console.error(e);process.exitCode=1;});
