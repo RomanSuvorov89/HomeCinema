@@ -420,6 +420,66 @@
     });
   }
 
+  function continueKey(card) {
+    var source=card.source || 'cub';
+    return (/^(cub|tmdb)$/.test(source)?'tmdb':source)+':tv:'+String(card.id);
+  }
+  function continueChoices() { return Lampa.Storage.get('homecinema_continue_v1',{}) || {}; }
+  function continueChoice(card) { return continueChoices()[continueKey(card)] || {}; }
+  function continueSuppressed(card) {
+    var choice=continueChoice(card);
+    return choice.until===-1 || Number(choice.until)>Date.now();
+  }
+  function manualContinueCards() {
+    var choices=continueChoices();
+    return Object.keys(choices).filter(function(key){
+      var item=choices[key];
+      return item.pinned && item.card && !continueSuppressed(item.card);
+    }).map(function(key){return choices[key].card;});
+  }
+  function continueVisible(card) {
+    return !continueSuppressed(card) && (continueChoice(card).pinned || !caughtUpSeries(card));
+  }
+  function saveContinueChoice(card,days) {
+    var choices=Object.assign({},continueChoices()), prior=continueChoice(card);
+    // Keep only public card metadata, never an activity/DOM object or timeline.
+    var saved={};
+    ['id','source','name','original_name','title','original_title','first_air_date','release_date',
+      'media_type','poster_path','backdrop_path','overview','kinopoisk_id','vote_average'].forEach(function(key){
+        if(typeof card[key]==='string' || typeof card[key]==='number') saved[key]=card[key];
+      });
+    choices[continueKey(card)]={card:saved,pinned:days===0?true:!!prior.pinned,
+      until:days===0?0:days===-1?-1:Date.now()+days*86400000};
+    Lampa.Storage.set('homecinema_continue_v1',choices);
+    refreshContinueCards();
+  }
+  function addContinueActions(event) {
+    if(!event || event.type!=='complite' || !event.data || !event.data.movie) return;
+    var card=event.data.movie;
+    if(!(card.first_air_date || card.media_type==='tv' || card.original_name)) return;
+    $('.button--homecinema-continue').remove();
+    var host=$('.full-start-new__buttons');
+    if(!host.length) host=$('.full-start__buttons');
+    if(!host.length) return;
+    var button=$('<div class="full-start__button selector button--homecinema-continue"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 5l10 7-10 7zM4 5v14"/></svg><span>Продолжить просмотр</span></div>');
+    button.on('hover:enter',function(){
+      var controller=Lampa.Controller.enabled().name;
+      Lampa.Select.show({title:'Продолжить просмотр',items:[
+        {title:'Добавить / вернуть в группу',subtitle:'Оставить в группе, даже если новые серии ещё не вышли',days:0},
+        {title:'Скрыть на неделю',days:7},
+        {title:'Скрыть на месяц',days:30},
+        {title:'Скрыть на 3 месяца',days:90},
+        {title:'Убрать бессрочно',subtitle:'Можно вернуть этой же кнопкой',days:-1}
+      ],onSelect:function(item){
+        saveContinueChoice(card,item.days);
+        Lampa.Controller.toggle(controller);
+        Lampa.Noty.show(item.days===0?'Добавлено в «Продолжить просмотр»':'Убрано из «Продолжить просмотр»');
+        Lampa.Activity.push({url:'',title:'Главная',component:'main',source:Lampa.Storage.field('source') || 'cub',page:1});
+      },onBack:function(){Lampa.Controller.toggle(controller);}});
+    });
+    host.append(button);
+  }
+
   var continueDisplayCards=[];
   function releaseForCard(card) {
     var saved=Lampa.Storage.get('roman_home_shelves_releases_v1',{});
@@ -461,7 +521,9 @@
   }
 
   function continueHomeCards(cards) {
-    return (cards || []).filter(function(card){return !caughtUpSeries(card);}).map(function(card){
+    var merged=(cards || []).slice();
+    manualContinueCards().forEach(function(card){if(!merged.some(function(old){return continueKey(old)===continueKey(card);})) merged.unshift(card);});
+    return merged.filter(continueVisible).map(function(card){
       var display=Object.assign({},card);
       continueDisplayCards.push(display);
       if(continueDisplayCards.length>1000) continueDisplayCards.shift();
@@ -471,7 +533,7 @@
 
   function refreshContinueCard(element) {
     if(element && element.card_data && continueDisplayCards.indexOf(element.card_data)>=0)
-      element.classList.toggle('homecinema-caught-up',caughtUpSeries(element.card_data));
+      element.classList.toggle('homecinema-caught-up',!continueVisible(element.card_data));
   }
   function refreshContinueCards() {
     Array.prototype.forEach.call(document.querySelectorAll('.card'),refreshContinueCard);
@@ -940,6 +1002,7 @@
           var wrapped=function(callback) {
             function completed(row) {
               if(item.kind==='continue') {
+                if(!row && manualContinueCards().length) row={title:'Продолжить просмотр',url:'continue',source:'cub',results:[],page:1};
                 var extra=remembered('continue');
                 if(extra && extra.results.length) {
                   row=Object.assign({},row || extra,{title:'Продолжить просмотр'});
@@ -968,7 +1031,10 @@
       var plan={captured:false,remaining:0};
       var next;
       function normalize(rows) {
-        return orderHomeRows(rows).map(function(row) {
+        var ordered=orderHomeRows(rows);
+        if(manualContinueCards().length && !ordered.some(function(row){return homeRowKind(row)==='continue';}))
+          ordered.unshift({title:'Продолжить просмотр',url:'continue',source:'cub',results:[],page:1});
+        return ordered.map(function(row) {
           row=Object.assign({},row,{results:filterReleaseCards(row.results)});
           var kind=homeRowKind(row);
           if(kind==='archive') row.title='Из прошлых лет';
@@ -1545,6 +1611,7 @@
     installAiHome();
     Lampa.Listener.follow('full', addRatingToFull);
     Lampa.Listener.follow('full', addReviewActions);
+    Lampa.Listener.follow('full', addContinueActions);
     observeCards();
     window.romanKinopoiskStarted = true;
     loadData(function () {});
