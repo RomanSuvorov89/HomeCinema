@@ -36,6 +36,10 @@ async function run(fail=false,pinned=false) {
  ctx.Lampa.Reguest=class {timeout(){} silent(url,done,error){assert(url.endsWith('/home.json'));setTimeout(()=>fail?error():done(snapshot),1);}};
  ctx.Lampa.Storage={get:(k,d)=>persisted[k] || d,set:(k,v)=>{persisted[k]=JSON.parse(JSON.stringify(v));}};
  ctx.Lang=ctx.Lampa.Lang;ctx.Api={partPersons(){return cb=>cb({title:'Persons',results:[{id:200}]});}};
+ const ruleCalls=[];
+ ctx.window={HomeCinemaAiRules:{read(){return [{enabled:true}];},
+  homeRow(){throw Error('Opening home must never search for cards');},
+  cards(cards){ruleCalls.push(Array.from(cards,c=>c.id));return cards;}}};
  vm.createContext(ctx);vm.runInContext(upstream,ctx);
  ctx.ContentRows={call:ctx.call};ctx.Lampa.ContentRows=ctx.ContentRows;ctx.Api.partNext=ctx.partNext;ctx.Lampa.Api.partNext=ctx.partNext;
  Object.defineProperty(ctx.Api,"partNext",{get(){return ctx.Lampa.Api.partNext;}});
@@ -52,6 +56,8 @@ async function run(fail=false,pinned=false) {
  assert.deepEqual(Array.from(all.slice(0,expected.length),r=>r.title),expected.filter(t=>t!=='Рекомендуем посмотреть'));
  assert(!all.some(r=>/TV Series I Have Seen/.test(r.title)),'remove remote collection rows from every page');
  assert.equal(all.filter(r=>r.title==='Огонь!').length,1);
+ if(!fail){assert(ruleCalls.length>=2,'apply rules to ready AI groups');assert(ruleCalls.every(ids=>ids.every(id=>id===1 || id===2)),'rules never touch other groups');}
+ assert.equal(ctx.homeRowKind({title:'Рекомендация AI'}),'ai');
  assert.equal(all.filter(r=>ctx.homeRowKind(r)==='continue').length,1,'only one continue group across ALL native pagination batches');
  if(pinned) assert.equal(all.flatMap(r=>r.results).filter(c=>c.id===555).length,1,'manual series is added only to the existing continue group');
  if(!fail){const resume=all.find(r=>r.title==='Продолжить просмотр');assert.deepEqual(Array.from(resume.results,c=>c.id),pinned?[555,101,999]:[101,999]);}

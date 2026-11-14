@@ -69,31 +69,6 @@
     var source=items.map(function(card){return Object.assign({},card,card.roman_review || {},{_card:card});});
     return apply(source).items.map(function(item){return item._card;});
   }
-  function rankedHome(items,kind){
-    var year=new Date().getFullYear();
-    var eligible=items.filter(function(item){
-      var date=Number(item.release_year || 0);
-      return item.feedback!=='seen' && item.feedback!=='not_interested' &&
-        (kind==='ai'?date>=year-4 && date<=year:date>0 && date<year-4);
-    }).slice().sort(function(a,b){return Number(b.final_score || 0)-Number(a.final_score || 0);});
-    return apply(eligible).items;
-  }
-  function homeRow(kind,resolver){
-    return Promise.resolve(provider?provider():{items:[]}).then(function(report){
-      var selected=rankedHome(report.items || [],kind).slice(0,24);
-      var missing=selected.filter(function(item){return !item.card;}).map(function(item){
-        return {kp_id:item.kp_id,title:item.title,year:item.release_year,media_type:item.media_type};
-      });
-      return new Promise(function(resolve){resolver(missing,function(found){
-        var results=selected.map(function(item){
-          var card=item.card || found.find(function(c){return String(c.kinopoisk_id)===String(item.kp_id);});
-          return card?Object.assign({},card,{kinopoisk_id:String(item.kp_id),roman_review:item}):null;
-        }).filter(Boolean);
-        resolve({kind:kind,title:kind==='ai'?'Рекомендация AI':'Из прошлых лет',results:results,
-          aiRulesApplied:true,url:'roman-ai://'+(kind==='ai'?'recent':'archive'),source:'cub',page:1,total_pages:2});
-      });});
-    });
-  }
   function open(){
     var draft=clone(read()), data=[], controller=Lampa.Controller.enabled().name;
     function back(){Lampa.Controller.toggle(controller);}
@@ -188,7 +163,7 @@
     },back);}
     Promise.resolve().then(function(){return provider?provider():{items:[]};}).then(function(report){data=report.items || [];list();},function(){notify('Каталог недоступен: доступны ручные значения, предпросмотр пока пуст');list();});
   }
-  window.HomeCinemaAiRules={homeRow:homeRow,rankedHome:rankedHome,apply:apply,cards:cards,open:open,read:read,matches:matches,setProvider:function(p){provider=p;}};
+  window.HomeCinemaAiRules={apply:apply,cards:cards,open:open,read:read,matches:matches,setProvider:function(p){provider=p;}};
 })();
 /* homecinema-ai-rules:end */
 
@@ -829,6 +804,8 @@
       return Lampa.Lang.translate(key);
     }).trim().toLowerCase();
     var route=String(row.url || row.name || '').toLowerCase();
+    if(row.kind==='ai' || row.kind==='archive') return row.kind;
+    if(/^рекомендаци[яи] ai$/.test(title)) return 'ai';
     function label(key) {return String(Lampa.Lang.translate(key)).toLowerCase();}
     if (/tv\s+series\s+i\s+(?:have|gave)\s+seen|movies?\s+i\s+have\s+seen/i.test(title)) return 'hidden';
     if (/трейлер|trailer/.test(title+' '+route) || title.indexOf(label('title_trailers'))===0) return 'hidden';
@@ -1105,18 +1082,6 @@
       return 'other';
     }
     function personalTask(kind,callback) {
-      if((kind==='ai' || kind==='archive') && typeof window!=='undefined' && window.HomeCinemaAiRules &&
-          window.HomeCinemaAiRules.read().some(function(rule){return rule.enabled!==false;})) {
-        window.HomeCinemaAiRules.homeRow(kind,resolveAll).then(function(row){
-          row.results.forEach(function(card){
-            var item=card.roman_review;
-            if(item){reviewItems[String(item.kp_id)]=item;reviewCards[(card.media_type || item.media_type)+':'+card.id]=item;}
-          });
-          row.params={emit:{onlyMore:function(){openReviewList(kind==='ai'?'recent':'archive');}}};
-          callback(row);
-        },function(){callback(null);});
-        return;
-      }
       cachedTask(kind,function(done) {
         loadPreview().then(function(rows) {
           if(!Array.isArray(rows)) return done(null);
@@ -1244,7 +1209,7 @@
           var kind=homeRowKind(row);
           if(kind==='archive') row.title='Из прошлых лет';
           if(kind==='watch') row.results=combinedWatchCards(row.results);
-          if(!row.aiRulesApplied && (kind==='ai' || kind==='archive') && typeof window!=='undefined' && window.HomeCinemaAiRules) row.results=window.HomeCinemaAiRules.cards(row.results);
+          if((kind==='ai' || kind==='archive') && typeof window!=='undefined' && window.HomeCinemaAiRules) row.results=window.HomeCinemaAiRules.cards(row.results);
           if(kind==='continue') row.results=continueHomeCards(row.results);
           if(homeRowKind(row)==='now') {
             if(!row.results.some(function(c){return c.roman_review;})) row.results=personalizeNow(row.results);

@@ -35,22 +35,18 @@ const cards=items.map(i=>({id:i.kp_id,roman_review:i}));store.homecinema_ai_rule
 assert.equal(api.cards(cards).length,12);assert.equal(api.cards(cards)[0],cards[12],'original card identity preserved');
 store={};assert.equal(api.cards(cards).length,24,'new profile has no inherited rules');
 
-const pool=Array.from({length:60},(_,i)=>({kp_id:i+1,title:'Candidate '+i,media_type:'tv',
- release_year:new Date().getFullYear(),countries:[i<24?'Россия':'США'],final_score:100-i,
- predicted_rating:8,kp_rating:8,card:{id:i+1,media_type:'tv'}}));
+// Main-page rule processing is synchronous and must not invoke the provider,
+// search for missing cards, or require a full recommendation report.
+api.setProvider(()=>{throw Error('Rule application must not load candidates');});
 store.homecinema_ai_rules_v1=[rule('multiply',0.5)];
-assert.equal(api.cards(pool.slice(0,24).map(i=>({id:i.kp_id,roman_review:i}))).filter(c=>c.roman_review.countries[0]==='Россия').length,24,'old truncated-pool path cannot introduce alternatives');
-assert.equal(api.rankedHome(pool,'ai').slice(0,24).filter(i=>i.countries[0]==='Россия').length,0,'rank full pool BEFORE taking 24');
-api.setProvider(()=>Promise.resolve({items:pool}));
-const homeCheck=api.homeRow('ai',(missing,done)=>{assert.equal(missing.length,0);done([]);}).then(row=>{
- assert.equal(row.results.length,24);assert(row.aiRulesApplied);
- assert.equal(row.results[0].id,25);
- assert.equal(row.results[0].roman_review.predicted_rating,8);
-});
-
+const ready=[{id:1,roman_review:{countries:['Россия'],final_score:100}},
+ {id:2,roman_review:{countries:['США'],final_score:80}}];
+assert.deepEqual(Array.from(api.cards(ready),c=>c.id),[2,1]);
+assert.equal(ready[0].roman_review.final_score,100);
+assert.equal(api.homeRow,undefined,'no on-open search path');
 api.setProvider(()=>Promise.resolve({items}));
 (async()=>{
- await homeCheck;
+
  store.homecinema_ai_rules_v1=[rule('multiply',0.5)];
  api.open();await new Promise(resolve=>setImmediate(resolve));
  assert.equal(writes,0);
