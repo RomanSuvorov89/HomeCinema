@@ -34,16 +34,33 @@ assert.equal(api.apply(items,[rule('multiply',NaN),rule('quota',12)]).items.leng
 const cards=items.map(i=>({id:i.kp_id,roman_review:i}));store.homecinema_ai_rules_v1=[rule('exclude')];
 assert.equal(api.cards(cards).length,12);assert.equal(api.cards(cards)[0],cards[12],'original card identity preserved');
 store={};assert.equal(api.cards(cards).length,24,'new profile has no inherited rules');
+
+const pool=Array.from({length:60},(_,i)=>({kp_id:i+1,title:'Candidate '+i,media_type:'tv',
+ release_year:new Date().getFullYear(),countries:[i<24?'Россия':'США'],final_score:100-i,
+ predicted_rating:8,kp_rating:8,card:{id:i+1,media_type:'tv'}}));
+store.homecinema_ai_rules_v1=[rule('multiply',0.5)];
+assert.equal(api.cards(pool.slice(0,24).map(i=>({id:i.kp_id,roman_review:i}))).filter(c=>c.roman_review.countries[0]==='Россия').length,24,'old truncated-pool path cannot introduce alternatives');
+assert.equal(api.rankedHome(pool,'ai').slice(0,24).filter(i=>i.countries[0]==='Россия').length,0,'rank full pool BEFORE taking 24');
+api.setProvider(()=>Promise.resolve({items:pool}));
+const homeCheck=api.homeRow('ai',(missing,done)=>{assert.equal(missing.length,0);done([]);}).then(row=>{
+ assert.equal(row.results.length,24);assert(row.aiRulesApplied);
+ assert.equal(row.results[0].id,25);
+ assert.equal(row.results[0].roman_review.predicted_rating,8);
+});
+
 api.setProvider(()=>Promise.resolve({items}));
 (async()=>{
+ await homeCheck;
+ store.homecinema_ai_rules_v1=[rule('multiply',0.5)];
  api.open();await new Promise(resolve=>setImmediate(resolve));
  assert.equal(writes,0);
- menu.onSelect(menu.items.find(i=>i.action==='template'));
- menu.onBack();
+ assert.equal(menu.title,'Правила AI');
+ assert(!menu.items.some(i=>i.action==='template'));
+
  menu.onSelect(menu.items.find(i=>i.action==='preview'));
  assert(menu.title.includes('затронуто'));assert.equal(writes,0,'preview never persists a draft');
  menu.onBack();menu.onSelect(menu.items.find(i=>i.action==='save'));
- assert.equal(writes,1);assert.equal(store.homecinema_ai_rules_v1[0].amount,2);assert.equal(pushed.component,'main');
+ assert.equal(writes,1);assert.equal(store.homecinema_ai_rules_v1[0].amount,0.5);assert.equal(pushed.component,'main');
  const saved=JSON.stringify(store);
  api.open();await new Promise(resolve=>setImmediate(resolve));
  menu.onSelect(menu.items.find(i=>i.rule));
