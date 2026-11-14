@@ -3,7 +3,7 @@ const source=fs.readFileSync('kinopoisk.js','utf8');
 const filters=source.slice(source.indexOf('  var homeFeedbackRevision'),source.indexOf('  function openReviewList('));
 const code=source.slice(source.indexOf('  function sameHomeCard('),source.indexOf('  var data = null;'));
 const upstream=fs.readFileSync('tests/fixtures/lampa-home-upstream.js','utf8');
-async function run(fail=false,pinned=false,coldProfile=false) {
+async function run(fail=false,pinned=false,coldProfile=false,sourceName='cub') {
  let pushed,opened=0,requestCount=0; const persisted={};
  if(coldProfile) persisted.roman_home_shelves_v6=Object.fromEntries(['ai','archive','watch','fire','now'].map(kind=>[kind,{row:{kind,results:[]},at:1}]));
  if(pinned) persisted.homecinema_continue_v1={'tmdb:tv:555':{pinned:true,until:0,card:{id:555,name:'Pinned',media_type:'tv',source:'cub'}}};
@@ -45,9 +45,10 @@ async function run(fail=false,pinned=false,coldProfile=false) {
  ctx.ContentRows={call:ctx.call};ctx.Lampa.ContentRows=ctx.ContentRows;ctx.Api.partNext=ctx.partNext;ctx.Lampa.Api.partNext=ctx.partNext;
  Object.defineProperty(ctx.Api,"partNext",{get(){return ctx.Lampa.Api.partNext;}});
  ctx.Lampa.Api.sources.cub.main=ctx.main;
+ ctx.Lampa.Api.sources.tmdb={main(){throw Error('Native TMDB home bypassed the personal cache');}};
  vm.runInContext(filters+code,ctx);ctx.installAiHome();ctx.installAiHome();
  let more;
- const first=await new Promise((resolve,reject)=>{more=ctx.Lampa.Api.sources.cub.main({},resolve,reject);});
+ const first=await new Promise((resolve,reject)=>{more=ctx.Lampa.Api.sources[sourceName].main({},resolve,reject);});
  const expected=fail?['Продолжить просмотр','Огонь!','Сейчас смотрят']:
   ['Продолжить просмотр','Рекомендация AI','Огонь!','Сейчас смотрят','Из прошлых лет','Буду смотреть'];
  if(coldProfile) assert(first.some(row=>row.title==='Рекомендация AI'),'ready AI shelf must join the first screen despite instant Continue and previously empty cache');
@@ -74,7 +75,7 @@ async function run(fail=false,pinned=false,coldProfile=false) {
  // Home cache is also read on a fresh page load (JSON round-trip above).
  const started=Date.now();
  ctx.get=function(url,params,done){if(/now_playing|fire/.test(url)) return;done({url,results:[{id:url}]});};
- const warm=await Promise.race([new Promise(resolve=>ctx.Lampa.Api.sources.cub.main({},resolve,()=>resolve([]))),new Promise((_,reject)=>setTimeout(()=>reject(Error('warm home blocked by network')),250))]);
+ const warm=await Promise.race([new Promise(resolve=>ctx.Lampa.Api.sources[sourceName].main({},resolve,()=>resolve([]))),new Promise((_,reject)=>setTimeout(()=>reject(Error('warm home blocked by network')),250))]);
  assert(warm.some(r=>r.title==='Огонь!'));assert(warm.some(r=>/^Сейчас смотрят/.test(r.title)));
  assert(Date.now()-started<250);
  if(!fail){
@@ -85,7 +86,7 @@ async function run(fail=false,pinned=false,coldProfile=false) {
   vm.runInContext(filters+code,ctx);ctx.installAiHome();
   const coldStart=Date.now();let coldNext;
   const cold=await Promise.race([
-   new Promise(resolve=>{coldNext=ctx.Lampa.Api.sources.cub.main({},resolve,()=>resolve([]));}),
+   new Promise(resolve=>{coldNext=ctx.Lampa.Api.sources[sourceName].main({},resolve,()=>resolve([]));}),
    new Promise((_,reject)=>setTimeout(()=>reject(Error('cold first paint blocked')),2300))]);
   assert(cold.some(row=>row.title==='Продолжить просмотр'));
   assert(Date.now()-coldStart<2000,'cold home exceeded its bounded first-batch deadline');
@@ -100,4 +101,4 @@ async function run(fail=false,pinned=false,coldProfile=false) {
  for(const title of ['Трейлеры - Новинки','Трейлеры — Новинки','#{title_trailers} - Новинки','UHD','TV Series I Have Seen 8','TV Series I Have Seen 4']) assert(ctx.hiddenHomeRow({title}));
  assert.equal(ctx.filterReleaseCards(['TS','HDTS','CAMRip','HDCAM','TC','DVDSCR','WEB-DL','WEBRip','BDRip','4K',''].map(quality=>({quality}))).length,5);
 }
-(async()=>{await run();await run(false,false,true);await run(true);await run(false,true);await run(true,true);console.log('CUB: order, trailers, pagination; warm AND empty cache with stalled requests: complete ready first batch; unavailable snapshot bounded; late rows retained: passed');})().catch(e=>{console.error(e);process.exitCode=1;});
+(async()=>{await run();await run(false,false,true);await run(false,false,true,'tmdb');await run(true,false,false,'tmdb');await run(true);await run(false,true);await run(true,true);console.log('CUB: order, trailers, pagination; warm AND empty cache with stalled requests: CUB and TMDB both use personal home; complete ready first batch; unavailable snapshot bounded; late rows retained: passed');})().catch(e=>{console.error(e);process.exitCode=1;});

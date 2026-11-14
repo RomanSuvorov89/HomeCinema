@@ -1249,6 +1249,14 @@
       };
     };
     cub.main.romanAiHome = true;
+    // The personal home is independent of the selected browse catalog.
+    // In particular TMDB's native main would bypass the materialized cache
+    // and issue direct discover requests instead of showing personal rows.
+    var tmdb=Lampa.Api.sources.tmdb;
+    if(tmdb && typeof tmdb.main==='function') {
+      tmdb.main=function() {return cub.main.apply(cub,arguments);};
+      tmdb.main.romanAiHome=true;
+    }
     loadPreview();
   }
   var data = null;
