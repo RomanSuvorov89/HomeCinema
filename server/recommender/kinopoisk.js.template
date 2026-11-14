@@ -1057,8 +1057,8 @@
       var cached=remembered(key);
       var answered=false;
       function answer(row) {if(answered)return;answered=true;callback(row);}
-      if(cached) answer(cached);
-      if(cached) return;
+      // Empty shelves saved before a profile import are not a cache hit.
+      if(cached && cached.results.length) {answer(cached);return;}
       if(key==='fire' || key==='now') loadPreview().then(function(rows) {
         if(Array.isArray(rows)) {
           var row=rows.find(function(r){return r.kind===key;});
@@ -1111,14 +1111,14 @@
         var pending=parts.filter(function(task){return typeof task==='function';});
         if(!pending.length) return empty();
         pending.sort(function(a,b){return (a.romanRank==null?6:a.romanRank)-(b.romanRank==null?6:b.romanRank);});
-        var chosen=pending.slice(0,limit), ended=false, timer;
+        var chosen=pending.slice(0,limit), ended=false, timer, settleTimer;
         var homeTail=null;
         if(typeof $==='function') {
           var root=$('.activity:visible').last();
           if(root.length){homeTail=$('<div class="roman-loading-tail" role="status" aria-label="Загрузка разделов"><i></i></div>');var host=root.find('.scroll__body').first();(host.length?host:root).append(homeTail);}
         }
         function finish() {
-          if(ended)return;ended=true;clearTimeout(timer);
+          if(ended)return;ended=true;clearTimeout(timer);clearTimeout(settleTimer);
           if(homeTail && chosen.every(function(task){return task.romanState && task.romanState.done;}))homeTail.remove();
           var rows=[];
           chosen.forEach(function(task){
@@ -1132,13 +1132,13 @@
         }
         function check() {
           if(homeTail && chosen.every(function(task){return task.romanState && task.romanState.done;})){homeTail.remove();homeTail=null;}
-          var readyPrefix=false;
-          for(var i=0;i<chosen.length;i++){
-            var state=chosen[i].romanState;
-            if(!state || !state.done)break;
-            if(state.row && state.row.results && state.row.results.length)readyPrefix=true;
-          }
-          if(readyPrefix || chosen.every(function(task){return task.romanState && task.romanState.done;}))finish();
+          // One synchronous Continue callback must not finish the first page
+          // before the cached server snapshot supplies the other priority rows.
+          // The deadline below still bounds unavailable upstream requests.
+          if(chosen.every(function(task){return task.romanState && task.romanState.done;}))finish();
+          else if(!settleTimer && chosen.filter(function(task){
+            var state=task.romanState;return state && state.done && state.row && state.row.results && state.row.results.length;
+          }).length>=3) settleTimer=setTimeout(finish,150);
         }
         timer=setTimeout(finish,1800);
         chosen.forEach(function(task){
@@ -1214,7 +1214,14 @@
             if(typeof window!=='undefined' && window.HomeCinemaAiRules) row.results=window.HomeCinemaAiRules.cards(row.results);
             row.results=row.results.slice(0,24);
           }
-          if(kind==='continue') row.results=continueHomeCards(row.results);
+          if(kind==='continue') {
+            // The snapshot can arrive after native history but before this batch.
+            var extra=remembered('continue');
+            if(extra) extra.results.forEach(function(card) {
+              if(!row.results.some(function(old){return sameHomeCard(old,card);}))row.results.push(card);
+            });
+            row.results=continueHomeCards(row.results);
+          }
           if(homeRowKind(row)==='now') {
             if(!row.results.some(function(c){return c.roman_review;})) row.results=personalizeNow(row.results);
             row.title='Сейчас смотрят';

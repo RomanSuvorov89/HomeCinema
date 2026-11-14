@@ -3,8 +3,9 @@ const source=fs.readFileSync('kinopoisk.js','utf8');
 const filters=source.slice(source.indexOf('  var homeFeedbackRevision'),source.indexOf('  function openReviewList('));
 const code=source.slice(source.indexOf('  function sameHomeCard('),source.indexOf('  var data = null;'));
 const upstream=fs.readFileSync('tests/fixtures/lampa-home-upstream.js','utf8');
-async function run(fail=false,pinned=false) {
+async function run(fail=false,pinned=false,coldProfile=false) {
  let pushed,opened=0,requestCount=0; const persisted={};
+ if(coldProfile) persisted.roman_home_shelves_v6=Object.fromEntries(['ai','archive','watch','fire','now'].map(kind=>[kind,{row:{kind,results:[]},at:1}]));
  if(pinned) persisted.homecinema_continue_v1={'tmdb:tv:555':{pinned:true,until:0,card:{id:555,name:'Pinned',media_type:'tv',source:'cub'}}};
  const titles={title_latest:'Последнее добавление',title_fire:'Огонь!',title_now_watch:'Сейчас смотрят',
    title_recomend_watch:'Рекомендуем посмотреть',title_trailers:'Трейлеры',title_new:'Новинки',title_in_high_quality:'В высоком качестве'};
@@ -22,7 +23,7 @@ async function run(fail=false,pinned=false) {
   network:{silent(url,done){done({results:[]});}},
   get(url,params,done){requestCount++;setTimeout(()=>done({url,results:[{id:url,release_quality:'WEBRip'},{id:'bad',release_quality:'TS'}]}),url.includes('fire')?12:1);},
   trailers(type,done){setTimeout(()=>done({title:'Трейлеры - Новинки',results:[{id:300}]}),2);},
-  rows:[{screen:'main',name:'resume',index:8,call(){return cb=>setTimeout(()=>cb({title:'Продолжить просмотр',results:[{id:101}]}),20);}},
+  rows:[{screen:'main',name:'resume',index:8,call(){return cb=>setTimeout(()=>cb({title:'Продолжить просмотр',results:[{id:101}]}),coldProfile?0:20);}},
     {screen:'main',name:'remote_collection',index:10,call(){const label='TV Series I Have Seen 8';return cb=>cb({title:label,results:[{id:404}]});}},
     {screen:'main',name:'recommend',index:0,call(){return cb=>cb({title:'Рекомендуем посмотреть',results:[{id:102}]});}}],
   Progress:class {append(p){this.p=p;} start(done){Promise.all(this.p.map(p=>new Promise(resolve=>p(resolve)))).then(done);}},
@@ -33,7 +34,7 @@ async function run(fail=false,pinned=false) {
   {kind:'ai',title:'Рекомендация AI',results:[{id:1,title:'AI',media_type:'movie',roman_review:{kp_id:1}}]},
   {kind:'archive',title:'Из прошлых лет',results:[{id:2,title:'Old'}]},
   {kind:'watch',title:'Буду смотреть',results:[{id:3,title:'Watch'}]}]};
- ctx.Lampa.Reguest=class {timeout(){} silent(url,done,error){assert(url.endsWith('/home.json'));setTimeout(()=>fail?error():done(snapshot),1);}};
+ ctx.Lampa.Reguest=class {timeout(){} silent(url,done,error){assert(url.endsWith('/home.json'));setTimeout(()=>fail?error():done(snapshot),coldProfile?80:1);}};
  ctx.Lampa.Storage={get:(k,d)=>persisted[k] || d,set:(k,v)=>{persisted[k]=JSON.parse(JSON.stringify(v));}};
  ctx.Lang=ctx.Lampa.Lang;ctx.Api={partPersons(){return cb=>cb({title:'Persons',results:[{id:200}]});}};
  const ruleCalls=[];
@@ -49,6 +50,7 @@ async function run(fail=false,pinned=false) {
  const first=await new Promise((resolve,reject)=>{more=ctx.Lampa.Api.sources.cub.main({},resolve,reject);});
  const expected=fail?['Продолжить просмотр','Огонь!','Сейчас смотрят']:
   ['Продолжить просмотр','Рекомендация AI','Огонь!','Сейчас смотрят','Из прошлых лет','Буду смотреть'];
+ if(coldProfile) assert(first.some(row=>row.title==='Рекомендация AI'),'ready AI shelf must join the first screen despite instant Continue and previously empty cache');
  // Native pagination may put the sixth priority row into the second batch.
  assert(!first.some(r=>/Трейлер|Последнее|высоком/.test(r.title)));
  assert(first.every(r=>r.results.every(c=>c.release_quality!=='TS')));
@@ -86,7 +88,7 @@ async function run(fail=false,pinned=false) {
    new Promise(resolve=>{coldNext=ctx.Lampa.Api.sources.cub.main({},resolve,()=>resolve([]));}),
    new Promise((_,reject)=>setTimeout(()=>reject(Error('cold first paint blocked')),2300))]);
   assert(cold.some(row=>row.title==='Продолжить просмотр'));
-  assert(Date.now()-coldStart<250,'Continue Watching waited for a cold recommendations cache');
+  assert(Date.now()-coldStart<2000,'cold home exceeded its bounded first-batch deadline');
   assert(!cold.some(row=>/Трейлер|Последнее|высоком/.test(row.title)));
   release(snapshot);
   await new Promise(resolve=>setTimeout(resolve,5));
@@ -98,4 +100,4 @@ async function run(fail=false,pinned=false) {
  for(const title of ['Трейлеры - Новинки','Трейлеры — Новинки','#{title_trailers} - Новинки','UHD','TV Series I Have Seen 8','TV Series I Have Seen 4']) assert(ctx.hiddenHomeRow({title}));
  assert.equal(ctx.filterReleaseCards(['TS','HDTS','CAMRip','HDCAM','TC','DVDSCR','WEB-DL','WEBRip','BDRip','4K',''].map(quality=>({quality}))).length,5);
 }
-(async()=>{await run();await run(true);await run(false,true);await run(true,true);console.log('CUB: order, trailers, pagination; warm AND empty cache with stalled requests: first Continue Watching <250ms; late rows retained: passed');})().catch(e=>{console.error(e);process.exitCode=1;});
+(async()=>{await run();await run(false,false,true);await run(true);await run(false,true);await run(true,true);console.log('CUB: order, trailers, pagination; warm AND empty cache with stalled requests: complete ready first batch; unavailable snapshot bounded; late rows retained: passed');})().catch(e=>{console.error(e);process.exitCode=1;});
