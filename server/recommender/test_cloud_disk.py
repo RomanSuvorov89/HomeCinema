@@ -303,6 +303,64 @@ class CloudTest(unittest.TestCase):
         self.assertEqual(c.execute('SELECT display_name FROM profiles WHERE profile_id=?',(other,)).fetchone()[0],'Второй')
         c.close()
 
+    def test_watchlist_count_mismatch_does_not_cancel_complete_votes(self):
+        import kp_sync
+        from unittest.mock import Mock
+        votes=Mock(rows=[{'kp_id':43,'rating':9}])
+        watch=Mock(rows=[{'kp_id':44}])
+        with patch.object(kp_sync,'direct_connection',side_effect=self.factory), \
+             patch.object(kp_sync,'establish_session',return_value='votes'), \
+             patch.object(kp_sync,'curl',return_value='watchlist'), \
+             patch.object(kp_sync,'total_count',side_effect=[1,2,2,2]), \
+             patch.object(kp_sync,'VotesParser',return_value=votes), \
+             patch.object(kp_sync,'WatchlistParser',return_value=watch):
+            data=kp_sync.sync('owner')
+            self.assertEqual(len(data['ratings']),1)
+            self.assertFalse(data['watchlist_complete'])
+            self.assertTrue(data['import_warning'])
+            with self.assertRaisesRegex(RuntimeError,'votes completeness'):kp_sync.sync('owner')
+
+    def test_incomplete_watchlist_keeps_old_rows_and_imports_ratings(self):
+        import kp_sync
+        data={'profile_id':'owner','updated_at':1,'ratings':[
+            {'kp_id':43,'media_type':'movie','title':'Rated','rating':9}],
+            'watchlist':[{'kp_id':44,'media_type':'movie','title':'New'}],
+            'watchlist_complete':False}
+        c=self.factory()
+        c.execute("INSERT INTO watchlist(profile_id,kp_id,source) VALUES('owner',42,'kinopoisk')")
+        c.commit();c.close()
+        with patch.object(kp_sync,'DB_FILE',self.db),patch.object(kp_sync,'PROFILE_ID','owner'):
+            kp_sync.persist_database(data)
+            kp_sync.persist_database(data)
+            c=self.factory()
+            self.assertEqual([r[0] for r in c.execute("SELECT kp_id FROM watchlist ORDER BY kp_id")],[42,44])
+            self.assertEqual(c.execute("SELECT rating FROM user_ratings WHERE profile_id='owner'").fetchone()[0],9)
+            c.close()
+            data['watchlist_complete']=True
+            kp_sync.persist_database(data)
+        c=self.factory()
+        self.assertEqual([r[0] for r in c.execute("SELECT kp_id FROM watchlist")],[44]);c.close()
+
+    def test_import_builds_secondary_model_and_keeps_owner_report(self):
+        import kp_sync
+        other='local_second'
+        report_dir=self.root/'data'
+        report_dir.mkdir()
+        owner=report_dir/'recommendations.json';owner.write_text('owner unchanged')
+        data={'profile_id':other,'public_profile_id':'555','updated_at':1,
+            'ratings':[{'kp_id':43,'media_type':'movie','title':'Other','rating':9}], 'watchlist':[]}
+        with patch.object(kp_sync,'DB_FILE',self.db),patch.object(kp_sync,'PROFILE_ID','owner'), \
+             patch.object(kp_sync,'DATA_FILE',report_dir/'ratings.json'), \
+             patch.object(kp_sync,'RECOMMENDATIONS_JSON_FILE',owner), \
+             patch.object(kp_sync,'sync',return_value=data), \
+             patch.object(kp_sync,'ensure_home_worker') as wake:
+            kp_sync.import_connected_profile(other)
+            secondary=kp_sync.profile_report_paths(other)[0]
+        self.assertEqual(owner.read_text(),'owner unchanged')
+        self.assertEqual(json.loads(secondary.read_text())['profile_id'],other)
+        wake.assert_called_once_with(other)
+        self.assertFalse((report_dir/'ratings.json').exists())
+
     def test_http_routes_reject_foreign_origin_and_do_not_expose_secrets(self):
         from http.server import HTTPServer, BaseHTTPRequestHandler
         from urllib.request import Request, urlopen

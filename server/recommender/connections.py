@@ -46,7 +46,8 @@ def start_import(factory, profile, callback):
         error = ''
         try:
             with IMPORT_LOCK:
-                callback(profile)
+                result=callback(profile)
+                if isinstance(result,dict):error=result.get("import_warning", "")
         except Exception:
             error = 'Импорт не завершён. Проверьте публичность профиля и повторите позже.'
         try:

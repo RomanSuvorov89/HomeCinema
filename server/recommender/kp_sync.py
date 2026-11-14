@@ -897,7 +897,20 @@ def curl_public(url):
 
 
 def establish_session(cookie_file, base=None):
-    base = base or BASE
+    if not base:
+        if PROFILE_ID.isdigit():
+            base=BASE
+        else:
+            from connections import read
+            c=direct_connection()
+            try:
+                public=read(c,PROFILE_ID,PROFILE_ID)['kp_id']
+                if not public:
+                    row=c.execute('SELECT kp_id FROM home_connections ORDER BY profile_id LIMIT 1').fetchone()
+                    public=row[0] if row else ''
+            finally:c.close()
+            if not public:raise ValueError('Подключите публичный профиль Кинопоиска')
+            base='https://www.kinopoisk.ru/user/'+public
     target = f"{base}/votes/list/ord/date/page/1/"
     first = curl(target, cookie_file)
     if "profileFilmsList" in first:
@@ -984,11 +997,15 @@ def sync(profile_id=None):
             watchlist = [row for page in pool.map(parse_watch, range(1, watch_pages + 1)) for row in page]
     if len(votes) != expected_votes:
         raise RuntimeError(f"votes completeness check failed: parsed {len(votes)}, expected {expected_votes}")
-    if len(watchlist) != expected_watch:
-        raise RuntimeError(f"watchlist completeness check failed: parsed {len(watchlist)}, expected {expected_watch}")
+    watchlist_complete=len(watchlist)==expected_watch
+    warning='' if watchlist_complete else (
+        f'Оценки обновлены. Список «Буду смотреть» получен не полностью: {len(watchlist)} из {expected_watch}. '
+        'Прежние записи сохранены, доступные добавлены.')
     return {
         "profile_id": profile_id,
         "public_profile_id": public_id,
+        "watchlist_complete": watchlist_complete,
+        "import_warning": warning,
         "updated_at": int(time.time()),
         "ratings_count": len(votes),
         "watchlist_count": len(watchlist),
@@ -1067,7 +1084,8 @@ def persist_database(data):
                     (profile_id, rating, label, utility),
                 )
             connection.execute("DELETE FROM user_ratings WHERE profile_id=?", (profile_id,))
-            connection.execute("DELETE FROM watchlist WHERE profile_id=?", (profile_id,))
+            if data.get("watchlist_complete",True):
+                connection.execute("DELETE FROM watchlist WHERE profile_id=?", (profile_id,))
             for item in data["ratings"]:
                 connection.execute(
                     """INSERT INTO media(kp_id, media_type, title, original_title, release_year, kp_rating, kp_vote_count)
@@ -1095,7 +1113,7 @@ def persist_database(data):
                     (item["kp_id"], item["media_type"], item["title"], item.get("year")),
                 )
                 connection.execute(
-                    "INSERT INTO watchlist(profile_id,kp_id,added_at,source) VALUES(?,?,?,'kinopoisk')",
+                    "INSERT INTO watchlist(profile_id,kp_id,added_at,source) VALUES(?,?,?,'kinopoisk') ON CONFLICT(profile_id,kp_id) DO NOTHING",
                     (profile_id, item["kp_id"], now),
                 )
             connection.execute(
@@ -1471,8 +1489,7 @@ def refresh_candidates_if_due():
             report = write_recommendation_reports(
                 connection,
                 profile[0],
-                RECOMMENDATIONS_JSON_FILE,
-                RECOMMENDATIONS_MD_FILE,
+                *profile_report_paths(profile[0]),
                 50,
             )
             print(
@@ -1555,8 +1572,7 @@ def run_enrichment():
             write_recommendation_reports(
                 connection,
                 profile[0],
-                RECOMMENDATIONS_JSON_FILE,
-                RECOMMENDATIONS_MD_FILE,
+                *profile_report_paths(profile[0]),
                 50,
             )
         write_reports(connection)
@@ -1587,6 +1603,18 @@ def run_enrichment():
 def import_connected_profile(profile):
     data = sync(profile)
     persist_database(data)
+    connection=open_database()
+    try:
+        calculate_feature_stats(connection,profile)
+        write_recommendation_reports(connection,profile,*profile_report_paths(profile),50)
+    finally:connection.close()
+    connection=direct_connection()
+    try:
+        connection.execute('UPDATE home_connections SET checked_at=?,error=? WHERE profile_id=?',
+            (int(time.time()),data.get('import_warning',''),profile))
+        connection.commit()
+    finally:connection.close()
+    ensure_home_worker(profile)
     if profile == PROFILE_ID:
         DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
         temporary = DATA_FILE.with_suffix(".tmp")
@@ -1841,6 +1869,35 @@ def card_ratings(params, profile_id=None):
 
 
 HOME_CACHE = None
+HOME_WORKERS = {}
+HOME_WORKERS_LOCK = threading.Lock()
+
+def profile_report_paths(profile):
+    if profile==PROFILE_ID:return RECOMMENDATIONS_JSON_FILE,RECOMMENDATIONS_MD_FILE
+    if not re.fullmatch(r'[A-Za-z0-9_-]{1,80}',profile):raise ValueError('Invalid profile')
+    folder=DATA_FILE.parent/'profile-reports'/profile
+    return folder/'recommendations.json',folder/'recommendations.md'
+
+def ensure_home_worker(profile):
+    if HOME_CACHE is None:return
+    from home_cache import start_worker
+    with HOME_WORKERS_LOCK:
+        if profile in HOME_WORKERS:
+            HOME_WORKERS[profile].set()
+            return
+        wake=threading.Event()
+        HOME_WORKERS[profile]=wake
+        try:start_worker(HOME_CACHE,profile,LAMPAC_URL,lambda:home_personal_data(profile),wake=wake)
+        except Exception:
+            HOME_WORKERS.pop(profile,None)
+            raise
+
+def start_profile_home_workers():
+    c=direct_connection()
+    try:profiles=[row[0] for row in c.execute('SELECT profile_id FROM profiles')]
+    finally:c.close()
+    for profile in profiles:ensure_home_worker(profile)
+
 
 
 def rated_airing_series(connection, profile_id, today=None):
@@ -1864,23 +1921,26 @@ def rated_airing_series(connection, profile_id, today=None):
         """,(profile_id,today.isoformat(),lower,upper,lower,today.isoformat())) if str(row["kp_id"]) not in hidden]
 
 
-def home_personal_data():
+def home_personal_data(profile_id=None):
+    profile_id=profile_id or PROFILE_ID
     from home_cache import kinopoisk_enabled
     if not kinopoisk_enabled():
         return [], [], []
     from review_api import review_data
     connection = direct_connection()
     try:
-        report = json.loads(RECOMMENDATIONS_JSON_FILE.read_text(encoding="utf-8")) if RECOMMENDATIONS_JSON_FILE.exists() else {}
+        from profiles import catalog_data
+        if not connection.execute('SELECT 1 FROM user_ratings WHERE profile_id=? LIMIT 1',(profile_id,)).fetchone():
+            return [],catalog_data(connection,profile_id)['watchlist'],[]
+        json_path,md_path=profile_report_paths(profile_id)
+        report = json.loads(json_path.read_text(encoding="utf-8")) if json_path.exists() else {}
         from candidate_engine import RECOMMENDATION_FORMULA_VERSION
         if report.get('formula_version') != RECOMMENDATION_FORMULA_VERSION:
-            report=write_recommendation_reports(connection,PROFILE_ID,
-                RECOMMENDATIONS_JSON_FILE,RECOMMENDATIONS_MD_FILE,50)
-        items = review_data(connection, PROFILE_ID, report)["items"]
-        if not DATA_FILE.exists():
-            raise ValueError("Kinopoisk profile not ready")
+            report=write_recommendation_reports(connection,profile_id,
+                json_path,md_path,50)
+        items = review_data(connection, profile_id, report)["items"]
         from profiles import catalog_data
-        watch = catalog_data(connection, PROFILE_ID)["watchlist"]
+        watch = catalog_data(connection, profile_id)["watchlist"]
         from episode_schedule import refresh
         from home_cache import config
         schedule_cookie=DATA_FILE.parent / 'episode-cookies.txt'
@@ -1897,16 +1957,16 @@ def home_personal_data():
                 '-b','sso_status=sso.passport.yandex.ru:synchronized',url],check=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
             return process.stdout.decode('utf-8','replace')
         pending_schedules=refresh(connection,fetch_schedule,series_state,save_series_tracking,
-            PROFILE_ID,config().get('episode_priority_ids',[]))
-        airing=rated_airing_series(connection,PROFILE_ID)
+            profile_id,config().get('episode_priority_ids',[]))
+        airing=rated_airing_series(connection,profile_id)
         context = {
             'rated': [r[0] for r in connection.execute(
-                'SELECT kp_id FROM user_ratings WHERE profile_id=?', (PROFILE_ID,))],
+                'SELECT kp_id FROM user_ratings WHERE profile_id=?', (profile_id,))],
             'airing': [r['kp_id'] for r in airing],
             'ended': [r[0] for r in connection.execute(
-                "SELECT kp_id FROM series_tracking WHERE profile_id=? AND airing_state IN ('ended','canceled')", (PROFILE_ID,))],
+                "SELECT kp_id FROM series_tracking WHERE profile_id=? AND airing_state IN ('ended','canceled')", (profile_id,))],
             'seen': [r[0] for r in connection.execute(
-                "SELECT kp_id FROM recommendation_feedback WHERE profile_id=? AND status IN ('seen','not_interested')", (PROFILE_ID,))],
+                "SELECT kp_id FROM recommendation_feedback WHERE profile_id=? AND status IN ('seen','not_interested')", (profile_id,))],
         }
         # Use exactly the saved model used by cached card badges, no network.
         from candidate_engine import predict_card
@@ -1919,7 +1979,7 @@ def home_personal_data():
                     if not str(kp or '').isdigit() or int(kp) in context['rated']: continue
                     row=connection.execute("SELECT kp_id,kp_rating,media_type FROM media WHERE kp_id=? AND metadata_status='ready'",(int(kp),)).fetchone()
                     if not row: continue
-                    prediction=predict_card(connection,PROFILE_ID,row['kp_id'],row['kp_rating'])
+                    prediction=predict_card(connection,profile_id,row['kp_id'],row['kp_rating'])
                     if prediction is not None:
                         context['card_predictions'][str(kp)]={'kp_id':int(kp),'media_type':row['media_type'],
                             'predicted_rating':prediction,'prediction_stage':'preliminary'}
@@ -2263,7 +2323,7 @@ if __name__ == "__main__":
             temporary.replace(DATA_FILE)
         from home_cache import Cache, start_worker, kinopoisk_enabled
         HOME_CACHE = Cache(os.environ.get("HOME_CACHE_DB", DATA_FILE.parent / "home-cache.sqlite3"))
-        start_worker(HOME_CACHE, PROFILE_ID, LAMPAC_URL, home_personal_data)
+        start_profile_home_workers()
         if kinopoisk_enabled():
             snapshot_database("before-candidates")
             threading.Thread(target=refresh_loop, daemon=True).start()

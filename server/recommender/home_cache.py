@@ -274,7 +274,7 @@ class Builder:
         self.cache.status('profile')
 
 
-def start_worker(cache, profile, lampac_url, personal):
+def start_worker(cache, profile, lampac_url, personal, wake=None):
     settings=config()
     base = os.environ.get('HOME_CUB_BASE_URL') or settings.get('cub_base_url') or lampac_url+'/cub/tmdb.cub.best/'
     base=base.rstrip('/')+'/'
@@ -294,5 +294,9 @@ def start_worker(cache, profile, lampac_url, personal):
             cache.status('cycle','')
             print('home cache: '+json.dumps({'profile':profile,'elapsed':round(time.time()-started,2),
                   'rows':[(r['kind'],len(r['results'])) for r in cache.snapshot(profile)['rows']]},ensure_ascii=False),flush=True)
-            time.sleep(min(interval,60) if getattr(builder,"warming",False) else interval)
+            delay=min(interval,60) if getattr(builder,"warming",False) else interval
+            if wake is not None:
+                wake.wait(delay)
+                wake.clear()
+            else:time.sleep(delay)
     threading.Thread(target=loop,daemon=True,name='home-cache').start()

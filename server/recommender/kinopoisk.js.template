@@ -1496,7 +1496,7 @@
   }
 
   function ratingCache() {
-    return Lampa.Storage.cache('roman_card_ratings_v10', 800, {});
+    return Lampa.Storage.cache('roman_card_ratings_v11', 800, {});
   }
 
   function cacheGet(key) {
@@ -1509,7 +1509,7 @@
   function cacheSet(key, value) {
     var cache = ratingCache();
     cache[key] = { saved_at: Date.now(), data: value };
-    Lampa.Storage.set('roman_card_ratings_v10', cache);
+    Lampa.Storage.set('roman_card_ratings_v11', cache);
   }
 
   function ratingText(label, value) {
