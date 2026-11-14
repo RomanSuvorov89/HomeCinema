@@ -252,6 +252,12 @@ class CloudTest(unittest.TestCase):
         self.assertTrue(cloud.allowed_origin(H()))
         H.headers['Origin']='http://[::1]:9118';self.assertTrue(cloud.allowed_origin(H()))
         H.headers['Origin']='http://localhost.evil.example:9118';self.assertFalse(cloud.allowed_origin(H()))
+        with patch.dict('os.environ',{'PUBLIC_LAMPAC_URL':'http://cinema.home:9118'}):
+            H.headers={'Origin':'http://cinema.home:9118','Host':'127.0.0.1:9120'}
+            self.assertTrue(cloud.allowed_origin(H()))
+            H.headers['Origin']='http://cinema.home.evil.example:9118'
+            self.assertFalse(cloud.allowed_origin(H()))
+
         for url in ('http://yandex.ru/file','https://yandex.ru.evil.example/file','https://127.0.0.1/file'):
             with self.assertRaises(cloud.CloudError):cloud.http(url)
 
