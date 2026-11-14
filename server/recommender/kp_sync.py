@@ -1056,7 +1056,7 @@ def persist_database(data):
             connection.execute(
                 """INSERT INTO profiles(profile_id, display_name, source_url, created_at, updated_at)
                    VALUES(?, ?, ?, ?, ?)
-                   ON CONFLICT(profile_id) DO UPDATE SET display_name=excluded.display_name,
+                   ON CONFLICT(profile_id) DO UPDATE SET
                      source_url=excluded.source_url, updated_at=excluded.updated_at""",
                 (profile_id, PROFILE_DISPLAY_NAME, f"https://www.kinopoisk.ru/user/{public_id}/", now, now),
             )

@@ -248,6 +248,10 @@ class CloudTest(unittest.TestCase):
         class H: headers={'Origin':'https://evil.example','Host':'home:9120'}
         self.assertFalse(cloud.allowed_origin(H()))
         H.headers['Origin']='http://home:9118';self.assertTrue(cloud.allowed_origin(H()))
+        H.headers={'Origin':'http://localhost:9118','Host':'127.0.0.1:9120'}
+        self.assertTrue(cloud.allowed_origin(H()))
+        H.headers['Origin']='http://[::1]:9118';self.assertTrue(cloud.allowed_origin(H()))
+        H.headers['Origin']='http://localhost.evil.example:9118';self.assertFalse(cloud.allowed_origin(H()))
         for url in ('http://yandex.ru/file','https://yandex.ru.evil.example/file','https://127.0.0.1/file'):
             with self.assertRaises(cloud.CloudError):cloud.http(url)
 
@@ -290,6 +294,7 @@ class CloudTest(unittest.TestCase):
         c=self.factory()
         self.assertEqual(c.execute("SELECT rating FROM user_ratings WHERE profile_id='owner'").fetchone()[0],8)
         self.assertEqual(c.execute('SELECT rating FROM user_ratings WHERE profile_id=?',(other,)).fetchone()[0],9)
+        self.assertEqual(c.execute('SELECT display_name FROM profiles WHERE profile_id=?',(other,)).fetchone()[0],'Второй')
         c.close()
 
     def test_http_routes_reject_foreign_origin_and_do_not_expose_secrets(self):

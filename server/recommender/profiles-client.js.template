@@ -312,13 +312,15 @@
         }).catch(cloudError);
     }
     function connectedMenu() {
-        request('/connections.json?id='+encodeURIComponent(active.id)).then(function(data){
-            Lampa.Select.show({title:'Кинопоиск — '+active.name,items:[
+        var profile={id:active.id,name:active.name};
+        request('/connections.json?id='+encodeURIComponent(profile.id)).then(function(data){
+            if(!active || active.id!==profile.id) return;
+            Lampa.Select.show({title:'Кинопоиск — '+profile.name,items:[
                 {title:'ID или ссылка на профиль',subtitle:data.kp_id || 'Не подключён',action:'edit'},
                 {title:'Обновить оценки и список «Буду смотреть»',subtitle:data.error || (data.checked_at?'Последняя попытка: '+new Date(data.checked_at*1000).toLocaleString():'Импорт публичного профиля'),action:'refresh'}
             ],onBack:menu,onSelect:function(item){
                 returnHead();
-                function save(value){request('/connections.json',{profile_id:active.id,kp_id:value}).then(function(){notify('Импорт запущен. Оценки появятся после завершения.');}).catch(cloudError);}
+                function save(value){if(!active || active.id!==profile.id){notify('Профиль изменился. Откройте подключение заново.');return;}request('/connections.json',{profile_id:profile.id,kp_id:value}).then(function(){notify('Импорт запущен. Оценки появятся после завершения.');}).catch(cloudError);}
                 if(item.action==='edit')cloudInput('ID или ссылка на публичный профиль Кинопоиска',save);
                 else if(data.kp_id)save(data.kp_id);
             }});

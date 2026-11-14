@@ -607,6 +607,9 @@ def allowed_origin(handler):
     parsed = urlparse(origin)
     hosts = {urlparse('http://' + handler.headers.get('Host', '')).hostname}
     hosts.update(urlparse(os.environ.get(k, '')).hostname for k in ('PUBLIC_LAMPAC_URL', 'PUBLIC_RECOMMENDER_URL', 'LAMPAC_URL'))
+    loopback={'localhost','127.0.0.1','::1'}
+    if hosts & loopback:
+        hosts.update(loopback)
     return parsed.scheme in ('http', 'https') and parsed.hostname in hosts and parsed.hostname is not None
 
 

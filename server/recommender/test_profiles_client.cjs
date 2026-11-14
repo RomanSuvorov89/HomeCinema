@@ -70,6 +70,13 @@ const tick=()=>new Promise(r=>setImmediate(r));
  assert.deepEqual(second.Storage.get('favorite',{}),{},'new user must not inherit history');
  assert.deepEqual(second.Storage.get('file_view',{}),{},'old IndexedDB reserve must be shadowed by explicit empty value');
  assert.equal(states.get('hc_other').values.favorite,'','new profile seed never contains owner history');
+ second.api.menu();second.context.menu.onSelect(second.context.menu.items.find(i=>i.action==='connections'));
+ await tick();assert.equal(second.context.menu.title,'Кинопоиск — Second');
+ second.context.menu.onSelect(second.context.menu.items.find(i=>i.action==='edit'));
+ second.context.inputDone('222');await tick();
+ const connected=requests.findLast(r=>r.path==='/connections.json' && r.payload);
+ assert.equal(connected.payload.profile_id,'hc_other');assert.equal(connected.payload.kp_id,'222');
+
  let blocked=false;second.events.lwsEvent({detail:{name:'bookmark',data:JSON.stringify({profile_id:''})},stopImmediatePropagation:()=>blocked=true});
  assert(blocked,'unscoped bookmark websocket event cannot cross profiles');
  blocked=false;second.events.lwsEvent({detail:{name:'bookmark',data:JSON.stringify({profile_id:'hc_other'})},stopImmediatePropagation:()=>blocked=true});assert(!blocked);
