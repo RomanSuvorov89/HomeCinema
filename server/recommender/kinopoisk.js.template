@@ -1,3 +1,174 @@
+/* homecinema-ai-rules:start */
+(function () {
+  'use strict';
+  if (window.HomeCinemaAiRules) return;
+  var KEY='homecinema_ai_rules_v1', provider=null;
+  var fields={countries:'Страна',genres:'Жанр',media_type:'Тип',release_year:'Год',origin_platform_label:'Платформа'};
+  function clone(value){return JSON.parse(JSON.stringify(value));}
+  function read(){var value=Lampa.Storage.get(KEY,[]);return Array.isArray(value)?value:[];}
+  function values(item,field,first){
+    var value=item[field];
+    if(value==null || value==='') return [];
+    var list=Array.isArray(value)?value:[value];
+    return (first?list.slice(0,1):list).map(function(v){return String(v).trim().toLowerCase();});
+  }
+  function matches(item,rule){
+    return Array.isArray(rule.conditions) && rule.conditions.length>0 && rule.conditions.every(function(c){
+      if(!c || !fields[c.field] || !Array.isArray(c.values) || !c.values.length) return false;
+      var actual=values(item,c.field,c.first);
+      // Unknown metadata never causes exclusion or demotion, even for NOT.
+      if(!actual.length) return false;
+      var hit=c.values.some(function(v){return actual.indexOf(String(v).trim().toLowerCase())>=0;});
+      return c.not?!hit:hit;
+    });
+  }
+  function valid(rule){
+    return rule && rule.enabled!==false && ['exclude','multiply','quota'].indexOf(rule.action)>=0 &&
+      (rule.action==='exclude' || (isFinite(Number(rule.amount)) && Number(rule.amount)>=0 &&
+       (rule.action==='multiply'?Number(rule.amount)<=5:
+        (Math.floor(Number(rule.amount))===Number(rule.amount)) && (Math.floor(Number(rule.window))===Number(rule.window)) && Number(rule.window)>=1 && Number(rule.window)<=100 && Number(rule.amount)<=Number(rule.window))));
+  }
+  function apply(items,rules,preferOrder){
+    rules=(rules || read()).filter(valid);
+    var excluded=0, touched=0, removed=[];
+    var candidates=items.map(function(item,index){
+      var matched=rules.filter(function(rule){return matches(item,rule);});
+      if(matched.length) touched++;
+      if(matched.some(function(rule){return rule.action==='exclude';})){excluded++;removed.push({item:item,reasons:matched.filter(function(r){return r.action==='exclude';}).map(function(r){return r.name || 'Исключение';})});return null;}
+      var score=preferOrder?NaN:Number(item.final_score);
+      if(!isFinite(score) || score<=0) score=1-index/(items.length+1);
+      matched.forEach(function(rule){if(rule.action==='multiply')score=Math.min(1e12,score*Number(rule.amount));});
+      return {item:item,index:index,score:score,matched:matched,relaxed:false};
+    }).filter(Boolean).sort(function(a,b){return b.score-a.score || a.index-b.index;});
+    // Without multipliers, preserve an explicitly selected sort and server order.
+    if(!rules.some(function(r){return r.action==='multiply';})) candidates.sort(function(a,b){return a.index-b.index;});
+    var result=[],quotas=rules.filter(function(r){return r.action==='quota';});
+    function allowed(candidate,strictOnly){
+      return quotas.every(function(rule){
+        if(strictOnly && !rule.strict) return true;
+        if(!matches(candidate.item,rule)) return true;
+        var recent=result.slice(-Math.max(0,Number(rule.window)-1));
+        if(Number(rule.window)===1) recent=[];
+        return recent.filter(function(old){return matches(old.item,rule);}).length<Number(rule.amount);
+      });
+    }
+    while(candidates.length){
+      var index=candidates.findIndex(function(c){return allowed(c,false);});
+      if(index<0){
+        index=candidates.findIndex(function(c){return allowed(c,true);});
+        if(index<0) break;
+        candidates[index].relaxed=true;
+      }
+      result.push(candidates.splice(index,1)[0]);
+    }
+    return {items:result.map(function(c){return c.item;}),excluded:excluded,affected:touched,removed:removed,
+      omitted:candidates.length,details:result.map(function(c){return {item:c.item,oldPosition:c.index+1,
+        reasons:c.matched.map(function(r){return r.name || 'Правило';}),relaxed:c.relaxed};})};
+  }
+  function cards(items){
+    var source=items.map(function(card){return Object.assign({},card,card.roman_review || {},{_card:card});});
+    return apply(source).items.map(function(item){return item._card;});
+  }
+  function open(){
+    var draft=clone(read()), data=[], controller=Lampa.Controller.enabled().name;
+    function back(){Lampa.Controller.toggle(controller);}
+    function notify(text){Lampa.Noty.show(text);}
+    function safe(text){return String(text || '').replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
+    function select(title,items,onSelect,onBack){Lampa.Select.show({title:safe(title),items:items.map(function(row){return Object.assign({},row,{title:safe(row.title),subtitle:safe(row.subtitle)});}),onSelect:onSelect,onBack:onBack || list});}
+    function input(title,value,done){
+      Lampa.Input.edit({title:title,value:String(value==null?'':value),free:true,nosave:true,nomic:true},function(text){
+        if(text==null) return;
+        done(String(text).trim());
+      });
+    }
+    function summary(rule){
+      var action=rule.action==='exclude'?'Исключить':rule.action==='multiply'?'Приоритет × '+rule.amount:
+        'Не больше '+rule.amount+' из '+rule.window+(rule.strict?' · строго':' · с дополнением');
+      return (rule.conditions || []).map(function(c){return fields[c.field]+(c.not?' не: ':': ')+c.values.join(', ')+(c.first?' (первая)':'');}).join(' И ')+' → '+action;
+    }
+    function fresh(){return {id:Date.now().toString(36)+Math.random().toString(36).slice(2),name:'Новое правило',enabled:true,conditions:[],action:'multiply',amount:0.7,window:10,strict:false};}
+    function preview(){
+      var output=apply(data,draft),before=data.slice(0,20);
+      select('Предпросмотр · затронуто '+output.affected+', исключено '+output.excluded+', отложено '+output.omitted,
+        [{title:'Посмотреть исходную двадцатку',before:true},{title:'Исключены правилами: '+output.excluded,removed:true}].concat(output.details.slice(0,20).map(function(d,n){
+          return {title:(n+1)+'. '+(d.item.title || d.item.name),subtitle:'Было №'+d.oldPosition+' · '+(d.reasons.join('; ') || 'Без правил')+(d.relaxed?' · квота смягчена: мало альтернатив':'')};
+        })),function(row){if(row.before)select('До изменений',before.map(function(i,n){return {title:(n+1)+'. '+(i.title || i.name)};}),function(){},preview);else if(row.removed)select('Исключены правилами',output.removed.slice(0,20).map(function(d){return {title:d.item.title || d.item.name,subtitle:d.reasons.join('; ')};}),function(){},preview);else preview();},list);
+    }
+    function condition(rule,c){
+      var available={};
+      data.forEach(function(item){var v=item[c.field];(Array.isArray(v)?v:[v]).forEach(function(x){if(x!=null && x!=='')available[String(x)]=true;});});
+      if(c.field==='media_type'){available.movie=true;available.tv=true;}
+      c.values.forEach(function(x){available[x]=true;});
+      function show(){select(fields[c.field],[
+        {title:'Готово',done:true},
+        {title:'Условие: '+(c.not?'не содержит':'содержит'),toggle:true}
+      ].concat(c.field==='countries'?[{title:'Страны: '+(c.first?'первая в списке каталога':'любая указанная'),first:true}]:[]).concat([
+        {title:'Ввести значение вручную',manual:true},
+        {title:'Удалить условие',remove:true}
+      ]).concat(Object.keys(available).sort().map(function(v){return {title:(c.values.indexOf(v)>=0?'✓ ':'')+({movie:'Фильм',tv:'Сериал'}[v] || v),value:v};})),function(row){
+        if(row.done) return edit(rule);
+        if(row.remove){rule.conditions.splice(rule.conditions.indexOf(c),1);return edit(rule);}
+        if(row.toggle)c.not=!c.not;
+        else if(row.first)c.first=!c.first;
+        else if(row.manual)return input('Значение '+fields[c.field],'',function(v){if(v){available[v]=true;if(c.values.indexOf(v)<0)c.values.push(v);}show();});
+        else {var i=c.values.indexOf(row.value);if(i<0)c.values.push(row.value);else c.values.splice(i,1);}
+        show();
+      },function(){edit(rule);});}
+      show();
+    }
+    function edit(rule){
+      select(rule.name,[
+        {title:'Название',action:'name'},
+        {title:rule.enabled?'✓ Включено':'Выключено',action:'enabled'},
+        {title:'Добавить условие (И)',action:'condition'}
+      ].concat(rule.conditions.map(function(c){return {title:fields[c.field]+': '+c.values.join(', '),condition:c};})).concat([
+        {title:'Действие: '+summary(Object.assign({},rule,{conditions:[]})),action:'action'}
+      ]).concat(rule.action!=='exclude'?[{title:'Величина: '+rule.amount,action:'amount'}]:[]).concat(rule.action==='quota'?[{title:'Размер окна: '+rule.window,action:'window'},{title:rule.strict?'Квота строгая':'Дополнять при нехватке альтернатив',action:'strict'}]:[]).concat([
+        {title:'Копировать правило',action:'copy'},{title:'Удалить правило',action:'delete'},{title:'К списку правил',action:'back'}
+      ]),function(row){
+        if(row.condition)return condition(rule,row.condition);
+        if(row.action==='back')return list();
+        if(row.action==='delete'){draft.splice(draft.indexOf(rule),1);return list();}
+        if(row.action==='copy'){var copy=clone(rule);copy.id=fresh().id;copy.name+=' (копия)';draft.push(copy);return edit(copy);}
+        if(row.action==='name')return input('Название правила',rule.name,function(v){if(v)rule.name=v;edit(rule);});
+        if(row.action==='enabled')rule.enabled=!rule.enabled;
+        if(row.action==='strict')rule.strict=!rule.strict;
+        if(row.action==='condition')return select('Что выбрать',Object.keys(fields).map(function(k){return {title:fields[k],field:k};}),function(v){var c={field:v.field,values:[]};rule.conditions.push(c);condition(rule,c);},function(){edit(rule);});
+        if(row.action==='action')return select('Как изменить выдачу',[{title:'Приоритет × множитель',value:'multiply'},{title:'Квота — не больше N из M',value:'quota'},{title:'Исключить',value:'exclude'}],function(v){rule.action=v.value;rule.amount=v.value==='quota'?2:0.7;edit(rule);},function(){edit(rule);});
+        if(row.action==='amount' || row.action==='window')return input(row.action==='window'?'Размер окна: 1–100':rule.action==='quota'?'Количество: 0–'+rule.window:'Множитель: 0–5',rule[row.action],function(v){
+          var candidate=Object.assign({},rule);candidate[row.action]=Number(v.replace(',','.'));
+          if(!v || !valid(Object.assign({},candidate,{enabled:true}))){notify('Недопустимое число');return edit(rule);}
+          rule[row.action]=candidate[row.action];edit(rule);
+        });
+        edit(rule);
+      },list);
+    }
+    function list(){select('Правила AI · изменения пока не сохранены',[
+      {title:'Добавить правило',action:'new'},
+      {title:'Шаблон: меньше российских сериалов',action:'template'}
+    ].concat(draft.map(function(r){return {title:(r.enabled?'✓ ':'○ ')+r.name,subtitle:summary(r),rule:r};})).concat([
+      {title:'Предпросмотр первых 20',action:'preview'},
+      {title:'Сохранить и обновить главную',action:'save'},
+      {title:'Отменить изменения',action:'cancel'}
+    ]),function(row){
+      if(row.rule)return edit(row.rule);
+      if(row.action==='cancel')return back();
+      if(row.action==='preview')return preview();
+      if(row.action==='save'){
+        if(draft.some(function(r){return !valid(Object.assign({},r,{enabled:true})) || !r.conditions.length || r.conditions.some(function(c){return !c.values.length;});}))return notify('Заполните условия и параметры всех правил');
+        Lampa.Storage.set(KEY,clone(draft));back();
+        Lampa.Activity.push({url:'',component:'main',source:Lampa.Storage.field('source') || 'cub',page:1,title:'Главная'});return;
+      }
+      var rule=fresh();
+      if(row.action==='template'){rule.name='Меньше российских сериалов';rule.action='quota';rule.amount=2;rule.conditions=[{field:'countries',values:['Россия']},{field:'media_type',values:['tv']}];}
+      draft.push(rule);edit(rule);
+    },back);}
+    Promise.resolve().then(function(){return provider?provider():{items:[]};}).then(function(report){data=report.items || [];list();},function(){notify('Каталог недоступен: доступны ручные значения, предпросмотр пока пуст');list();});
+  }
+  window.HomeCinemaAiRules={apply:apply,cards:cards,open:open,read:read,matches:matches,setProvider:function(p){provider=p;}};
+})();
+/* homecinema-ai-rules:end */
+
 (function () {
   'use strict';
   // roman-home-layout-v074
@@ -51,7 +222,7 @@
       if (filters.sort === 'title') return String(a.title).localeCompare(String(b.title), 'ru');
       return Number(b[key] || 0) - Number(a[key] || 0) || Number(a.kp_id) - Number(b.kp_id);
     });
-    return result;
+    return typeof window!=='undefined' && window.HomeCinemaAiRules ? window.HomeCinemaAiRules.apply(result,null,filters.sort && filters.sort!=='relevance').items : result;
   }
 
   function openReviewList(period) {
@@ -222,6 +393,7 @@
       var root = comp.render();
       if (root.find('.roman-ai-toolbar').length) return;
       var bar = $('<div class="roman-ai-toolbar"></div>');
+      $('<div class="selector simple-button">Правила выдачи</div>').on('hover:enter',function(){window.HomeCinemaAiRules.open();}).appendTo(bar);
       function reload() {Lampa.Activity.replace({url:'',title:'Рекомендация AI',component:REVIEW_COMPONENT,page:1});}
       var labels = {period:'Период',type:'Тип',year:'Год',rating:'КП от',country:'Страна',genre:'Жанр',status:'Отметка',sort:'Сортировка'};
       var values = {recent:'Последние пять лет',archive:'Из прошлых лет',movie:'Фильмы',tv:'Сериалы',new:'Без отметки',relevance:'Релевантность',year:'Сначала новые',rating:'Рейтинг КП',votes:'Число оценок',title:'Название'};
@@ -1037,6 +1209,7 @@
           var kind=homeRowKind(row);
           if(kind==='archive') row.title='Из прошлых лет';
           if(kind==='watch') row.results=combinedWatchCards(row.results);
+          if((kind==='ai' || kind==='archive') && typeof window!=='undefined' && window.HomeCinemaAiRules) row.results=window.HomeCinemaAiRules.cards(row.results);
           if(kind==='continue') row.results=continueHomeCards(row.results);
           if(homeRowKind(row)==='now') {
             if(!row.results.some(function(c){return c.roman_review;})) row.results=personalizeNow(row.results);
@@ -1600,6 +1773,7 @@
 
   function start() {
     if (window.romanKinopoiskStarted) return;
+    if(window.HomeCinemaAiRules) window.HomeCinemaAiRules.setProvider(cachedReviewReport);
     installHomeUiPolish();
     installHomeNavigation();
     installTailLoading();

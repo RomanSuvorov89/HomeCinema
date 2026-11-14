@@ -6,7 +6,7 @@
     var settings = ['homecinema_appearance','language','tmdb_lang','source','poster_size','menu_sort',
         'full_btn_priority','interface_sound_level','video_quality_default','subtitles_start',
         'player_normalization','player_subs_shift_time','roman_review_filters_v1',
-        'homecinema_continue_v1', 'roman_hidden_home_v1','homecinema_notice_read','search_history'];
+        'homecinema_ai_rules_v1', 'homecinema_continue_v1', 'roman_hidden_home_v1','homecinema_notice_read','search_history'];
     var history = ['favorite','file_view','online_watched_last','online_view','online_last_balanser',
         'torrents_view','torrents_filter_data','kp_rating','timetable'];
     var fields = settings.concat(history), active = null, profiles = [], owner = '', started = false;
@@ -328,6 +328,7 @@
     function menu() {
         if (!active) {connect();return;}
         var items=profiles.map(function (profile) {return {title:profile.name,subtitle:profile.id===active.id ? 'Текущий профиль' : '',profile:profile};});
+        items.push({title:'Правила AI-рекомендаций',action:'ai_rules'});
         items.push({title:'Облачное сохранение',action:'cloud'});
         items.push({title:'Подключённые сервисы — Кинопоиск',action:'connections'});
         items.push({title:'Добавить профиль',action:'create'});
@@ -336,6 +337,7 @@
         if(conflict) {items.push({title:'Восстановить настройки с сервера',action:'remote'});items.push({title:'Сохранить мои настройки вместо серверных',action:'local'});}
         Lampa.Select.show({title:'Кто смотрит?',items:items,onBack:returnHead,onSelect:function (item) {
             returnHead();
+            if(item.action==='ai_rules' && window.HomeCinemaAiRules)window.HomeCinemaAiRules.open();
             if(item.action==='cloud')cloudMenu();
             if(item.action==='connections')connectedMenu();
             if (item.action==='remote' || item.action==='local') resolveSettings(item.action==='local').catch(function(e) {notify(e.message);});

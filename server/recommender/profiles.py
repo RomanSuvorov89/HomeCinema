@@ -11,7 +11,7 @@ SETTINGS = {
     'homecinema_appearance', 'language', 'tmdb_lang', 'source', 'poster_size', 'menu_sort',
     'full_btn_priority', 'interface_sound_level', 'video_quality_default', 'subtitles_start',
     'player_normalization', 'player_subs_shift_time', 'roman_review_filters_v1',
-    'homecinema_continue_v1', 'roman_hidden_home_v1', 'homecinema_notice_read', 'search_history',
+    'homecinema_ai_rules_v1', 'homecinema_continue_v1', 'roman_hidden_home_v1', 'homecinema_notice_read', 'search_history',
 }
 HISTORY = {'favorite', 'file_view', 'online_watched_last', 'online_view',
            'online_last_balanser', 'torrents_view', 'torrents_filter_data', 'kp_rating', 'timetable'}
