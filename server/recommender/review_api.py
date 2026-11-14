@@ -121,6 +121,35 @@ def home_snapshot(connection, cache, profile_id):
                 "SELECT kp_id FROM recommendation_feedback WHERE profile_id=? AND status IN ('seen','not_interested')",(profile_id,)))
     hidden=hidden_home_ids(connection,profile_id)
     snapshot['hidden_ids']=hidden
+    # Read only already materialized recommendations and already mapped cards.
+    # Never resolve identities, recalculate predictions or call an external API here.
+    if cache and callable(getattr(cache,'review_snapshot',None)):
+        report=cache.review_snapshot(profile_id)
+        if report.get('revision') and not report.get('warming'):
+            year=time.localtime().tm_year
+            excluded=set(hidden)
+            excluded.update(str(row[0]) for row in connection.execute(
+                'SELECT kp_id FROM user_ratings WHERE profile_id=?',(profile_id,)))
+            if connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='recommendation_feedback'").fetchone():
+                excluded.update(str(row[0]) for row in connection.execute(
+                    "SELECT kp_id FROM recommendation_feedback WHERE profile_id=? AND status IN ('seen','not_interested')",(profile_id,)))
+            groups={'ai':[],'archive':[]}
+            for item in report.get('items',[]):
+                if not item.get('card') or str(item.get('kp_id')) in excluded or item.get('feedback') in ('seen','not_interested'):
+                    continue
+                release=int(item.get('release_year') or 0)
+                kind='ai' if year-4<=release<=year else 'archive' if 0<release<year-4 else None
+                if not kind:continue
+                extra={key:value for key,value in item.items() if key!='card'}
+                card=dict(item['card'],kinopoisk_id=str(item['kp_id']),roman_review=extra)
+                groups[kind].append(card)
+            for kind,cards in groups.items():
+                row=next((row for row in snapshot['rows'] if row.get('kind')==kind),None)
+                if row is None:
+                    row={'kind':kind,'title':'Рекомендация AI' if kind=='ai' else 'Из прошлых лет'}
+                    snapshot['rows'].append(row)
+                row['results']=cards
+                row['candidate_pool']='ready-cache-v1'
     for row in snapshot['rows']:
         if row.get('kind')=='watch':
             row['results']=[card for card in row.get('results',[])

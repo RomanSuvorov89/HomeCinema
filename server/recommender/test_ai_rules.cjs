@@ -18,6 +18,13 @@ const demoted=api.apply(items,[rule('multiply',0.1)]);
 assert.equal(demoted.items[0].countries[0],'США');
 assert.equal(api.apply(items,[rule('multiply',0.5),rule('multiply',0.5)]).items[0].countries[0],'США');
 assert.equal(JSON.stringify(items),original,'input scores and forecasts never change');
+const wide=Array.from({length:520},(_,i)=>({kp_id:i+1,countries:[i<200?'Россия':'США'],final_score:i<200?10000-i:1/(i+1),predicted_rating:8}));
+const ordered=api.apply(wide,[rule('multiply',0.5)]).items;
+assert.equal(ordered.length,520);
+assert(ordered.slice(0,320).every(i=>i.countries[0]!=='Россия'),'all 320 normal-priority candidates precede the 200 demoted candidates');
+assert(ordered.slice(320).every(i=>i.countries[0]==='Россия'));
+assert.equal(wide[0].final_score,10000,'standard score unchanged');
+
 const strict=api.apply(items,[rule('quota',2,true)]);
 for(let i=0;i<strict.items.length;i++)assert(strict.items.slice(Math.max(0,i-9),i+1).filter(x=>x.countries[0]==='Россия').length<=2);
 assert(strict.omitted>0);

@@ -74,6 +74,28 @@ class ReviewTests(unittest.TestCase):
         self.assertEqual(profiles.catalog_data(c,'owner')['watchlist'],[])
         c.close()
 
+    def test_full_ready_pool_is_read_before_home_limit_without_network_or_writes(self):
+        import copy,time
+        year=time.localtime().tm_year
+        items=[{'kp_id':i+100,'release_year':year,'final_score':1000-i,
+                'countries':['Россия' if i<200 else 'США'],
+                'card':{'id':i+100,'media_type':'tv'}} for i in range(520)]
+        items.append({'kp_id':9999,'release_year':year,'countries':['США']})
+        class ReadyCache:
+            def snapshot(self,profile):return {'rows':[{'kind':'ai','results':[{'id':1}]}]}
+            def review_snapshot(self,profile):return {'revision':'cached','items':copy.deepcopy(items)}
+        c=self.connect()
+        c.set_authorizer(lambda action,*args: sqlite3.SQLITE_OK if action in (
+            sqlite3.SQLITE_SELECT,sqlite3.SQLITE_READ,sqlite3.SQLITE_FUNCTION) else sqlite3.SQLITE_DENY)
+        with patch('urllib.request.urlopen',side_effect=AssertionError('network during cache read')):
+            result=review_api.home_snapshot(c,ReadyCache(),'owner')
+        row=next(row for row in result['rows'] if row['kind']=='ai')
+        self.assertEqual(len(row['results']),520,'do not truncate to 24 before client priority rules')
+        self.assertEqual(row['candidate_pool'],'ready-cache-v1')
+        self.assertNotIn('card',row['results'][0]['roman_review'],'do not duplicate nested cached cards')
+        self.assertEqual(row['results'][0]['roman_review']['final_score'],1000)
+        c.close()
+
     def test_actual_http_save_and_read_and_validation(self):
         report_file = Path(self.tmp.name) / 'recommendations.json'
         report_file.write_text(json.dumps({'groups':[{'code':'for_me','items':[{

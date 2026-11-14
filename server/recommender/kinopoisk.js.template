@@ -37,9 +37,10 @@
       if(matched.some(function(rule){return rule.action==='exclude';})){excluded++;removed.push({item:item,reasons:matched.filter(function(r){return r.action==='exclude';}).map(function(r){return r.name || 'Исключение';})});return null;}
       var score=preferOrder?NaN:Number(item.final_score);
       if(!isFinite(score) || score<=0) score=1-index/(items.length+1);
-      matched.forEach(function(rule){if(rule.action==='multiply')score=Math.min(1e12,score*Number(rule.amount));});
-      return {item:item,index:index,score:score,matched:matched,relaxed:false};
-    }).filter(Boolean).sort(function(a,b){return b.score-a.score || a.index-b.index;});
+      var priority=1;
+      matched.forEach(function(rule){if(rule.action==='multiply')priority=Math.min(1e12,priority*Number(rule.amount));});
+      return {item:item,index:index,score:score,priority:priority,matched:matched,relaxed:false};
+    }).filter(Boolean).sort(function(a,b){return b.priority-a.priority || b.score-a.score || a.index-b.index;});
     // Without multipliers, preserve an explicitly selected sort and server order.
     if(!rules.some(function(r){return r.action==='multiply';})) candidates.sort(function(a,b){return a.index-b.index;});
     var result=[],quotas=rules.filter(function(r){return r.action==='quota';});
@@ -1025,7 +1026,7 @@
       return push.call(this,params);
     };
     // Cache each priority shelf independently; never wait for unrelated shelves.
-    var homeCacheKey='roman_home_shelves_v5';
+    var homeCacheKey='roman_home_shelves_v6';
     var homeCache=Lampa.Storage.get(homeCacheKey,{});
     if(!homeCache || typeof homeCache!=='object') homeCache={};
     function remembered(key) {
@@ -1209,7 +1210,10 @@
           var kind=homeRowKind(row);
           if(kind==='archive') row.title='Из прошлых лет';
           if(kind==='watch') row.results=combinedWatchCards(row.results);
-          if((kind==='ai' || kind==='archive') && typeof window!=='undefined' && window.HomeCinemaAiRules) row.results=window.HomeCinemaAiRules.cards(row.results);
+          if(kind==='ai' || kind==='archive') {
+            if(typeof window!=='undefined' && window.HomeCinemaAiRules) row.results=window.HomeCinemaAiRules.cards(row.results);
+            row.results=row.results.slice(0,24);
+          }
           if(kind==='continue') row.results=continueHomeCards(row.results);
           if(homeRowKind(row)==='now') {
             if(!row.results.some(function(c){return c.roman_review;})) row.results=personalizeNow(row.results);
