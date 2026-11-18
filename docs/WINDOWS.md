@@ -38,6 +38,10 @@ Set-ExecutionPolicy -Scope Process Bypass
 запускает Ubuntu в фоне без окна и держит Windows-клиент WSL подключённым.
 Скрипт хранится в `%LOCALAPPDATA%\HomeCinemaWsl-Ubuntu`; checkout можно перемещать.
 После выхода WSL скрипт пробует запустить её снова через 10 секунд.
+Если завершён сам Windows-процесс keepalive, повторный триггер задачи запускает
+его снова раз в пять минут в текущем сеансе пользователя. Уже работающий процесс
+не дублируется (`IgnoreNew`). Для запуска после ручного завершения не требуется
+заново входить в Windows.
 Задача не ограничена тремя днями и может работать от батареи.
 Это запуск после входа пользователя, а не до входа в Windows.
 
@@ -55,12 +59,14 @@ curl.exe --noproxy "*" --fail http://localhost:9118/ -o NUL
 wsl -d Ubuntu -- bash -lc 'cd ~/HomeCinema && bash server/healthcheck.sh'
 ```
 
-Перед намеренным выключением WSL сначала остановите задачу, иначе она запустит
-Ubuntu снова. Для возврата фонового запуска вызовите `Start-ScheduledTask`:
+Перед намеренным выключением WSL отключите и остановите задачу, иначе повторный
+триггер запустит Ubuntu снова. Для возврата включите задачу и запустите её:
 
 ```powershell
+Disable-ScheduledTask -TaskName HomeCinemaWsl-Ubuntu
 Stop-ScheduledTask -TaskName HomeCinemaWsl-Ubuntu
 wsl --terminate Ubuntu
+Enable-ScheduledTask -TaskName HomeCinemaWsl-Ubuntu
 Start-ScheduledTask -TaskName HomeCinemaWsl-Ubuntu
 ```
 

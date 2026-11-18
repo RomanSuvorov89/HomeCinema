@@ -37,13 +37,18 @@ $UserId = [Security.Principal.WindowsIdentity]::GetCurrent().Name
 $PowerShellPath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
 $Arguments = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$ScriptPath`" -Distribution `"$Distribution`""
 $Action = New-ScheduledTaskAction -Execute $PowerShellPath -Argument $Arguments
-$Trigger = New-ScheduledTaskTrigger -AtLogOn -User $UserId
+$LogonTrigger = New-ScheduledTaskTrigger -AtLogOn -User $UserId
+# A terminated Windows host cannot restart its own keepalive loop. Retry even
+# during a long Windows session; IgnoreNew prevents duplicate running hosts.
+$RecoveryTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) `
+    -RepetitionInterval (New-TimeSpan -Minutes 5)
+$Triggers = @($LogonTrigger, $RecoveryTrigger)
 $Principal = New-ScheduledTaskPrincipal -UserId $UserId -LogonType Interactive -RunLevel Limited
 $Settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) `
     -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
     -StartWhenAvailable -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1)
 
-Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger `
+Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Triggers `
     -Principal $Principal -Settings $Settings -Description 'Keep the HomeCinema WSL distribution running after Windows logon.' -Force | Out-Null
 Start-ScheduledTask -TaskName $TaskName
 Write-Host "Started $TaskName. WSL will start in the background at this user's Windows logon."
