@@ -10,7 +10,8 @@ Select Case mode
     If WScript.Arguments.Count <> 2 Then WScript.Quit 2
     script = "wsl-keepalive.ps1"
   Case "panel"
-    script = "server-panel.ps1"
+    result = shell.Run(Quote(fso.BuildPath(root, "server-panel.exe")), 1, False)
+    WScript.Quit result
   Case Else
     WScript.Quit 2
 End Select

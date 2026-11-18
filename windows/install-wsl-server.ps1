@@ -35,7 +35,7 @@ $Distributions = @(& $WslPath --list --quiet) | ForEach-Object { ($_ -replace "`
 if ($LASTEXITCODE -ne 0 -or $Distribution -notin $Distributions) {
     throw "WSL distribution '$Distribution' was not found for this Windows user."
 }
-$Files = @('wsl-keepalive.ps1','hidden-launcher.vbs','server-panel.ps1','wsl-server-control.sh')
+$Files = @('wsl-keepalive.ps1','hidden-launcher.vbs','server-panel.ps1','server-panel-host.cs','wsl-server-control.sh')
 foreach ($File in $Files) {
     if (-not (Test-Path -LiteralPath (Join-Path $PSScriptRoot $File) -PathType Leaf)) {
         throw "Missing panel file: $File"
@@ -46,6 +46,16 @@ New-Item -ItemType Directory -Path $InstallDirectory -Force | Out-Null
 foreach ($File in $Files) {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot $File) -Destination (Join-Path $InstallDirectory $File) -Force
 }
+# A Windows GUI executable hosts the panel, independently of the hidden worker.
+# Build locally; no binary, user configuration or server data is published.
+$PanelExe = Join-Path $InstallDirectory 'server-panel.exe'
+$NextExe = Join-Path $InstallDirectory 'server-panel.next.exe'
+if (Test-Path -LiteralPath $NextExe) { Remove-Item -LiteralPath $NextExe -Force }
+Add-Type -Path (Join-Path $InstallDirectory 'server-panel-host.cs') `
+    -ReferencedAssemblies @('System.Windows.Forms.dll', 'System.Core.dll', ([System.Management.Automation.PSObject].Assembly.Location)) `
+    -OutputAssembly $NextExe -OutputType WindowsApplication
+Move-Item -LiteralPath $NextExe -Destination $PanelExe -Force
+
 @{ Distribution=$Distribution } |
     ConvertTo-Json | Set-Content -LiteralPath $ConfigPath -Encoding UTF8
 
@@ -82,8 +92,8 @@ if (Test-Path -LiteralPath $LegacyShortcutPath) {
 
 $Shell = New-Object -ComObject WScript.Shell
 $Shortcut = $Shell.CreateShortcut($ShortcutPath)
-$Shortcut.TargetPath = $WscriptPath
-$Shortcut.Arguments = "`"$Launcher`" panel"
+$Shortcut.TargetPath = $PanelExe
+$Shortcut.Arguments = ''
 $Shortcut.WorkingDirectory = $InstallDirectory
 $Shortcut.Description = 'Linux / WSL: terminal, distribution status and all Docker containers'
 $Shortcut.IconLocation = (Join-Path $env:SystemRoot 'System32\shell32.dll') + ',15'

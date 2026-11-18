@@ -278,7 +278,15 @@ try {
             Start-Operation 'status'
         }
     })
-    $form.Add_Shown({ Start-Linux; $timer.Start() })
+    $form.Add_Shown({
+        $form.WindowState = 'Normal'
+        $form.ShowInTaskbar = $true
+        $form.TopMost = $true
+        $form.Activate()
+        $form.TopMost = $false
+        Start-Linux
+        $timer.Start()
+    })
     $form.Add_FormClosing({
         if ($null -ne $script:Work) {
             # Finish an already requested Docker operation without a visible window.
