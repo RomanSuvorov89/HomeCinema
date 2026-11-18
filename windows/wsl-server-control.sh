@@ -1,31 +1,44 @@
 #!/usr/bin/env bash
 set -euo pipefail
 action=${1:-status}
-repository=${2:-'~/HomeCinema'}
-target=${3:-home-cinema-lampac}
-case "$repository" in '~/'*) repository="$HOME/${repository:2}" ;; esac
-cd -- "$repository"
-compose=(docker compose --env-file server/.runtime.env -f server/docker-compose.yml)
+target=${2:-}
 case "$action" in
   status)
-    printf 'Repository: %s\n\n' "$PWD"
-    printf 'Docker: '
-    docker info --format '{{.ServerVersion}}'
-    printf '\nContainers (all projects, read only):\n'
-    docker ps -a --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
-    ;;
-  start) "${compose[@]}" up -d --no-build --pull never ;;
-  stop) "${compose[@]}" stop ;;
-  restart) "${compose[@]}" restart ;;
-  health) bash server/healthcheck.sh ;;
-  logs|restart-container)
-    if [[ ! "$target" =~ ^home-cinema-[a-z0-9-]+$ ]]; then
-      printf 'Only HomeCinema containers can be selected.\n' >&2; exit 2
+    printf 'Linux: '; uname -sr
+    printf '\nUptime:\n'; uptime
+    printf '\nMemory:\n'; free -h
+    printf '\nRoot filesystem:\n'; df -h /
+    printf '\nDocker:\n'
+    if docker info --format '{{.ServerVersion}}'; then
+      docker ps -a --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
+      printf '\n__WSL_CONTAINER_NAMES__\n'
+      docker ps -a --format '{{.Names}}'
+    else
+      printf 'Docker is unavailable; Linux is running.\n'
     fi
-    if [[ "$action" == logs ]]; then docker logs --timestamps --tail 150 "$target" 2>&1
-    else docker restart "$target"; fi
+    ;;
+  health)
+    printf 'Failed Linux services:\n'; systemctl --failed --no-pager
+    printf '\nDocker service:\n'; systemctl status docker --no-pager
+    ;;
+  logs|start-container|stop-container|restart-container)
+    if [[ ! "$target" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$ ]]; then
+      printf 'Select a valid Docker container name.\n' >&2; exit 2
+    fi
+    docker inspect --type container "$target" >/dev/null
+    case "$action" in
+      logs) docker logs --timestamps --tail 150 "$target" 2>&1 ;;
+      start-container) docker start "$target" ;;
+      stop-container) docker stop "$target" ;;
+      restart-container) docker restart "$target" ;;
+    esac
     ;;
   resources) docker stats --no-stream --format 'table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.NetIO}}' ;;
   disk) docker system df ;;
+  linux-resources)
+    uptime; free -h; df -h
+    printf '\nProcesses by CPU:\n'
+    ps -eo pid,comm,%cpu,%mem --sort=-%cpu | head -n 16 || true
+    ;;
   *) printf 'Unknown action.\n' >&2; exit 2 ;;
 esac

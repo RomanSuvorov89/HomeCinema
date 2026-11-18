@@ -1,5 +1,5 @@
 param(
-    [string]$PanelPath = (Join-Path $env:LOCALAPPDATA 'HomeCinemaWsl-Ubuntu\server-panel.ps1')
+    [string]$PanelPath = (Join-Path $env:LOCALAPPDATA 'WslServer-Ubuntu\server-panel.ps1')
 )
 $ErrorActionPreference = 'Stop'
 $tokens = $null

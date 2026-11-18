@@ -8,13 +8,13 @@ Add-Type -AssemblyName System.Drawing
 try {
     $Config = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'server-panel.json') -Raw -Encoding UTF8 | ConvertFrom-Json
     if ($Config.Distribution -notmatch '^[A-Za-z0-9_.-]+$') { throw 'Неверное имя дистрибутива WSL.' }
-    $TaskName = 'HomeCinemaWsl-' + $Config.Distribution
+    $TaskName = 'WslServer-' + $Config.Distribution
     $WslPath = Join-Path $env:SystemRoot 'System32\wsl.exe'
     $Controller = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'wsl-server-control.sh') -Raw -Encoding UTF8
     $script:Work = $null
     $script:NextStatus = [DateTime]::MaxValue
     $script:CloseAfterWork = $false
-    $ActionNames = @{status='Состояние сервера';start='Запуск сервера';stop='Остановка сервера';restart='Перезапуск сервера';health='Проверка сервисов';logs='Журнал контейнера';resources='Ресурсы контейнеров';disk='Использование диска';'restart-container'='Перезапуск контейнера'}
+    $ActionNames = @{status='Состояние Linux';health='Проверка служб Linux';logs='Журнал контейнера';resources='Ресурсы контейнеров';disk='Использование диска Docker';'linux-resources'='Ресурсы Linux';'restart-container'='Перезапуск контейнера';'start-container'='Запуск контейнера';'stop-container'='Остановка контейнера';'wsl-stop'='Остановка Ubuntu';'wsl-restart'='Перезапуск Ubuntu';'list-wsl'='Дистрибутивы WSL'}
 
     function Quote-Argument([string]$Value) {
         # Windows CommandLineToArgvW quoting, including paths with spaces.
@@ -35,17 +35,40 @@ try {
         if ($task.State -ne 'Running') { Start-ScheduledTask -TaskName $TaskName }
     }
     function Show-Error([string]$Message) {
-        [System.Windows.Forms.MessageBox]::Show($form, $Message, 'HomeCinema', 'OK', 'Error') | Out-Null
+        [System.Windows.Forms.MessageBox]::Show($form, $Message, 'Linux / WSL', 'OK', 'Error') | Out-Null
     }
-    function Start-Operation([string]$Action, [string]$Target = '') {
+    function Test-LinuxRunning {
+        $info = New-Object System.Diagnostics.ProcessStartInfo
+        $info.FileName = $WslPath
+        $info.Arguments = '--list --running --quiet'
+        $info.UseShellExecute = $false
+        $info.CreateNoWindow = $true
+        $info.RedirectStandardOutput = $true
+        $info.StandardOutputEncoding = [System.Text.Encoding]::Unicode
+        $process = [System.Diagnostics.Process]::Start($info)
+        try {
+            $names = $process.StandardOutput.ReadToEnd()
+            $process.WaitForExit()
+            return [string]$Config.Distribution -in @(($names -replace "`0",'') -split '\r?\n' | ForEach-Object { $_.Trim() })
+        } finally { $process.Dispose() }
+    }
+    function Start-Operation([string]$Action, [string]$Target = '', [bool]$AllowWake = $false) {
         if ($null -ne $script:Work) { return }
         try {
             $taskText.Text = Get-TaskSummary
+            if (-not $AllowWake -and $Action -notin @('wsl-stop','wsl-restart','list-wsl') -and -not (Test-LinuxRunning)) {
+                $output.Text = "$($Config.Distribution) остановлена. Нажмите «Запустить Ubuntu» или «Терминал Linux»."
+                $status.Text = 'Linux остановлен — проверка состояния не включает его автоматически.'
+                return
+            }
             $output.Text = "$($ActionNames[$Action])…`r`n"
             $status.Text = 'Работаем… Окно можно закрыть, сервер продолжит работать.'
             $info = New-Object System.Diagnostics.ProcessStartInfo
             $info.FileName = $WslPath
-            $parts = @('--distribution', [string]$Config.Distribution, '--exec', 'bash', '-s', '--', $Action, [string]$Config.RepositoryPath, $Target)
+            $direct = $Action -in @('wsl-stop','wsl-restart','list-wsl')
+            $parts = if ($Action -eq 'list-wsl') { @('--list','--verbose') }
+                     elseif ($direct) { @('--terminate',[string]$Config.Distribution) }
+                     else { @('--distribution', [string]$Config.Distribution, '--exec', 'bash', '-s', '--', $Action, $Target) }
             $info.Arguments = ($parts | ForEach-Object { Quote-Argument $_ }) -join ' '
             $info.UseShellExecute = $false
             $info.CreateNoWindow = $true
@@ -54,34 +77,42 @@ try {
             $info.RedirectStandardError = $true
             $info.StandardOutputEncoding = [System.Text.Encoding]::UTF8
             $info.StandardErrorEncoding = [System.Text.Encoding]::UTF8
+            if ($Action -eq 'list-wsl') { $info.StandardOutputEncoding = [System.Text.Encoding]::Unicode }
             $process = [System.Diagnostics.Process]::Start($info)
             $outTask = $process.StandardOutput.ReadToEndAsync()
             $errTask = $process.StandardError.ReadToEndAsync()
-            $process.StandardInput.Write($Controller.Replace("`r`n", "`n"))
+            if (-not $direct) { $process.StandardInput.Write($Controller.Replace("`r`n", "`n")) }
             $process.StandardInput.Close()
             $script:Work = @{ Process=$process; Out=$outTask; Err=$errTask; Action=$Action; Started=Get-Date }
         } catch { $status.Text = 'Не удалось выполнить действие'; Show-Error $_.Exception.Message }
     }
-    function Start-Server {
-        try { Ensure-Background; Start-Operation 'start' }
+    function Start-Linux {
+        try { Ensure-Background; Start-Operation 'status' '' $true }
         catch { Show-Error $_.Exception.Message }
     }
     function Confirm-Operation([string]$Action, [string]$Message, [string]$Target = '') {
         if ($null -ne $script:Work) { return }
-        if ([System.Windows.Forms.MessageBox]::Show($form, $Message, 'HomeCinema', 'YesNo', 'Question') -eq 'Yes') {
+        if ([System.Windows.Forms.MessageBox]::Show($form, $Message, 'Linux / WSL', 'YesNo', 'Question') -eq 'Yes') {
             Start-Operation $Action $Target
         }
     }
-    function Open-Lampa {
+    function Stop-Linux([bool]$Restart) {
+        if ($null -ne $script:Work) { return }
+        $verb = if ($Restart) { 'Перезапустить' } else { 'Остановить' }
+        $message = "$verb $($Config.Distribution) целиком? Все приложения, службы и Docker-контейнеры внутри этой Ubuntu остановятся. Другие дистрибутивы WSL не затрагиваются."
+        if ([System.Windows.Forms.MessageBox]::Show($form,$message,'Linux / WSL','YesNo','Warning') -ne 'Yes') { return }
         try {
-            $uri = [Uri]$Config.ServerUrl
-            if ($uri.Scheme -notin @('http','https')) { throw 'Неверный адрес Лампы.' }
-            Start-Process -FilePath $uri.AbsoluteUri | Out-Null
+            Disable-ScheduledTask -TaskName $TaskName | Out-Null
+            Stop-ScheduledTask -TaskName $TaskName
+            Start-Operation $(if ($Restart) { 'wsl-restart' } else { 'wsl-stop' })
         } catch { Show-Error $_.Exception.Message }
     }
-
+    function Open-Terminal {
+        try { Ensure-Background; Start-Process -FilePath $WslPath -ArgumentList @('--distribution',[string]$Config.Distribution) | Out-Null }
+        catch { Show-Error $_.Exception.Message }
+    }
     $form = New-Object System.Windows.Forms.Form
-    $form.Text = 'HomeCinema — управление сервером'
+    $form.Text = ($Config.Distribution + ' — управление Linux / WSL')
     $form.Size = New-Object System.Drawing.Size(1080, 760)
     $form.MinimumSize = New-Object System.Drawing.Size(800, 560)
     $form.StartPosition = 'CenterScreen'
@@ -89,18 +120,24 @@ try {
     $form.BackColor = [System.Drawing.Color]::FromArgb(245,247,250)
 
     $menu = New-Object System.Windows.Forms.MenuStrip
-    $serverMenu = $menu.Items.Add('Сервер')
-    $startItem = $serverMenu.DropDownItems.Add('Запустить HomeCinema')
-    $startItem.Add_Click({ Start-Server })
-    $stopItem = $serverMenu.DropDownItems.Add('Остановить HomeCinema')
-    $stopItem.Add_Click({ Confirm-Operation 'stop' 'Остановить контейнеры HomeCinema? Данные сохранятся. Другие проекты Docker продолжат работать.' })
-    $restartItem = $serverMenu.DropDownItems.Add('Перезапустить HomeCinema')
-    $restartItem.Add_Click({ Confirm-Operation 'restart' 'Перезапустить контейнеры HomeCinema? Текущее воспроизведение может прерваться.' })
+    $serverMenu = $menu.Items.Add('Linux / WSL')
+    $startItem = $serverMenu.DropDownItems.Add('Запустить Ubuntu')
+    $startItem.Add_Click({ Start-Linux })
+    $terminalItem = $serverMenu.DropDownItems.Add('Открыть терминал Linux')
+    $terminalItem.Add_Click({ Open-Terminal })
+    $listItem = $serverMenu.DropDownItems.Add('Все дистрибутивы WSL')
+    $listItem.Add_Click({ Start-Operation 'list-wsl' })
+    $stopItem = $serverMenu.DropDownItems.Add('Остановить Ubuntu целиком')
+    $stopItem.Add_Click({ Stop-Linux $false })
+    $restartItem = $serverMenu.DropDownItems.Add('Перезапустить Ubuntu целиком')
+    $restartItem.Add_Click({ Stop-Linux $true })
     $viewMenu = $menu.Items.Add('Просмотр')
-    $stateItem = $viewMenu.DropDownItems.Add('Состояние и контейнеры')
+    $stateItem = $viewMenu.DropDownItems.Add('Состояние Linux и все контейнеры')
     $stateItem.Add_Click({ Start-Operation 'status' })
-    $healthItem = $viewMenu.DropDownItems.Add('Проверить доступность сервисов')
+    $healthItem = $viewMenu.DropDownItems.Add('Службы Linux')
     $healthItem.Add_Click({ Start-Operation 'health' })
+    $linuxItem = $viewMenu.DropDownItems.Add('Ресурсы Linux и процессы')
+    $linuxItem.Add_Click({ Start-Operation 'linux-resources' })
     $resourceItem = $viewMenu.DropDownItems.Add('Ресурсы контейнеров')
     $resourceItem.Add_Click({ Start-Operation 'resources' })
     $diskItem = $viewMenu.DropDownItems.Add('Использование диска Docker')
@@ -120,7 +157,7 @@ try {
     $disableItem.Add_Click({ try { Disable-ScheduledTask -TaskName $TaskName | Out-Null; $taskText.Text=Get-TaskSummary } catch { Show-Error $_.Exception.Message } })
     $helpMenu = $menu.Items.Add('Справка')
     $aboutItem = $helpMenu.DropDownItems.Add('Как работает панель')
-    $aboutItem.Add_Click({ [System.Windows.Forms.MessageBox]::Show($form, "Ярлык запускает сервер и открывает панель.`r`nЗакрытие панели НЕ выключает сервер.`r`nОстановка через меню затрагивает только HomeCinema.`r`nФоновая задача WSL работает отдельно и восстанавливается каждые 5 минут.`r`n`r`nWSL: $($Config.Distribution)`r`nПроект: $($Config.RepositoryPath)`r`nЛампа: $($Config.ServerUrl)", 'HomeCinema') | Out-Null })
+    $aboutItem.Add_Click({ [System.Windows.Forms.MessageBox]::Show($form, "Это панель всего Linux-дистрибутива $($Config.Distribution).`r`nЗакрытие панели НЕ выключает Ubuntu.`r`nОстановка Ubuntu выключает все службы и контейнеры в ней.`r`nСписок Docker показывает все проекты.`r`nОстановленная через меню Ubuntu не запускается повторно до команды Запустить.`r`n`r`nФоновая задача: $TaskName", 'Linux / WSL') | Out-Null })
     $form.MainMenuStrip = $menu
 
     $layout = New-Object System.Windows.Forms.TableLayoutPanel
@@ -132,7 +169,7 @@ try {
     [void]$layout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle('Percent',100)))
     [void]$layout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle('Absolute',42)))
     $title = New-Object System.Windows.Forms.Label
-    $title.Text = 'HomeCinema'
+    $title.Text = $Config.Distribution + ' / WSL'
     $title.Font = New-Object System.Drawing.Font('Segoe UI', 21, [System.Drawing.FontStyle]::Bold)
     $title.Dock = 'Fill'
     $taskText = New-Object System.Windows.Forms.Label
@@ -142,10 +179,10 @@ try {
     $buttons.Dock = 'Fill'
     $buttons.WrapContents = $false
     foreach ($entry in @(
-        @('Открыть Лампу', { Open-Lampa }),
-        @('Запустить', { Start-Server }),
+        @('Терминал Linux', { Open-Terminal }),
+        @('Запустить Ubuntu', { Start-Linux }),
         @('Состояние', { Start-Operation 'status' }),
-        @('Проверить сервисы', { Start-Operation 'health' })
+        @('Службы Linux', { Start-Operation 'health' })
     )) {
         $button = New-Object System.Windows.Forms.Button
         $button.Text = $entry[0]
@@ -171,8 +208,7 @@ try {
     $container = New-Object System.Windows.Forms.ComboBox
     $container.DropDownStyle = 'DropDownList'
     $container.Width = 260
-    foreach ($name in @('home-cinema-lampac','home-cinema-recommender','home-cinema-posters','home-cinema-torrserver')) { [void]$container.Items.Add($name) }
-    $container.SelectedIndex = 0
+    # Every container is populated from Docker, not a hardcoded project list.
     $logs = New-Object System.Windows.Forms.Button
     $logs.Text = 'Журнал'
     $logs.AutoSize = $true
@@ -181,7 +217,17 @@ try {
     $restartContainer.Text = 'Перезапустить выбранный'
     $restartContainer.AutoSize = $true
     $restartContainer.Add_Click({ Confirm-Operation 'restart-container' "Перезапустить $($container.SelectedItem)?" ([string]$container.SelectedItem) })
-    $logBar.Controls.AddRange(@($logLabel,$container,$logs,$restartContainer))
+    $startContainer = New-Object System.Windows.Forms.Button
+    $startContainer.Text = 'Запустить'
+    $startContainer.AutoSize = $true
+    $startContainer.Add_Click({ Confirm-Operation 'start-container' "Запустить $($container.SelectedItem)?" ([string]$container.SelectedItem) })
+    $stopContainer = New-Object System.Windows.Forms.Button
+    $stopContainer.Text = 'Остановить'
+    $stopContainer.AutoSize = $true
+    $stopContainer.Add_Click({ Confirm-Operation 'stop-container' "Остановить $($container.SelectedItem)?" ([string]$container.SelectedItem) })
+    $restartContainer.Text = 'Перезапустить'
+    $container.Width = 220
+    $logBar.Controls.AddRange(@($logLabel,$container,$logs,$startContainer,$stopContainer,$restartContainer))
     $layout.Controls.Add($title,0,0)
     $layout.Controls.Add($taskText,0,1)
     $layout.Controls.Add($buttons,0,2)
@@ -204,13 +250,25 @@ try {
                 $code = $work.Process.ExitCode
                 $script:LastExitCode = $code
                 $text = $work.Out.Result + $work.Err.Result
+                if ($work.Action -eq 'status' -and $text.Contains('__WSL_CONTAINER_NAMES__')) {
+                    $sections = $text -split '__WSL_CONTAINER_NAMES__',2
+                    $previous = [string]$container.SelectedItem
+                    $container.Items.Clear()
+                    foreach ($name in ($sections[1] -split '\r?\n')) {
+                        if ($name -match '^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$') { [void]$container.Items.Add($name) }
+                    }
+                    if ($container.Items.Contains($previous)) { $container.SelectedItem=$previous }
+                    elseif ($container.Items.Count) { $container.SelectedIndex=0 }
+                    $text=$sections[0]
+                }
                 $output.Text = $text.Replace("`r`n","`n").Replace("`n","`r`n")
                 $status.Text = if ($code -eq 0) { 'Готово: ' + $ActionNames[$work.Action] + ' · ' + (Get-Date -Format 'HH:mm:ss') } else { "Ошибка ($code). Подробности выше." }
                 $taskText.Text = Get-TaskSummary
                 $work.Process.Dispose()
                 $script:Work = $null
+                if ($work.Action -eq 'wsl-restart' -and $code -eq 0) { Start-Linux }
                 if ($script:CloseAfterWork) { $form.Close(); return }
-                if ($work.Action -eq 'start' -and $code -eq 0) { $script:NextStatus = (Get-Date).AddSeconds(2) }
+                if ($work.Action -in @('start-container','stop-container','restart-container') -and $code -eq 0) { $script:NextStatus = (Get-Date).AddSeconds(2) }
             } else {
                 $elapsed = [int]((Get-Date) - $work.Started).TotalSeconds
                 $status.Text = "$($ActionNames[$work.Action]): $elapsed сек. Панель отвечает, сервер работает отдельно."
@@ -220,7 +278,7 @@ try {
             Start-Operation 'status'
         }
     })
-    $form.Add_Shown({ Start-Server; $timer.Start() })
+    $form.Add_Shown({ Start-Linux; $timer.Start() })
     $form.Add_FormClosing({
         if ($null -ne $script:Work) {
             # Finish an already requested Docker operation without a visible window.
@@ -247,8 +305,8 @@ try {
         }
         if ($null -ne $script:Work) { throw 'Panel status check timed out.' }
         if ($script:LastExitCode -ne 0) { throw $output.Text }
-        if ($output.Text -notmatch 'home-cinema-lampac') { throw 'Container list missing from panel status.' }
-        @{ Result='passed'; WindowTitle=$form.Text; Task=(Get-TaskSummary); Status=$output.Text } | ConvertTo-Json -Compress
+        if ($output.Text -notmatch 'Linux:') { throw 'Linux status missing.' }
+        @{ Result='passed'; WindowTitle=$form.Text; Task=(Get-TaskSummary); Status=$output.Text; Containers=@($container.Items) } | ConvertTo-Json -Compress
         $form.Close()
         $timer.Dispose()
     } else {
@@ -256,6 +314,6 @@ try {
     }
 } catch {
     if ($Check) { [Console]::Error.WriteLine($_.ToString()); exit 1 }
-    [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, 'HomeCinema — ошибка запуска', 'OK', 'Error') | Out-Null
+    [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, 'Linux / WSL — ошибка запуска', 'OK', 'Error') | Out-Null
     exit 1
 }

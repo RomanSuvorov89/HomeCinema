@@ -7,12 +7,14 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$TaskName = "HomeCinemaWsl-$Distribution"
+$LegacyTaskName = "HomeCinemaWsl-$Distribution"
+$TaskName = "WslServer-$Distribution"
 $InstallDirectory = Join-Path $env:LOCALAPPDATA $TaskName
 $Desktop = [Environment]::GetFolderPath('Desktop')
-$ShortcutName = if ($Distribution -eq 'Ubuntu') { 'HomeCinema.lnk' } else { "HomeCinema ($Distribution).lnk" }
+$ShortcutName = "$Distribution.lnk"
 $ShortcutPath = Join-Path $Desktop $ShortcutName
 $ExistingTask = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+$LegacyTask = Get-ScheduledTask -TaskName $LegacyTaskName -ErrorAction SilentlyContinue
 
 if ($Remove) {
     if ($null -ne $ExistingTask) {
@@ -24,7 +26,7 @@ if ($Remove) {
         $Shortcut = $Shell.CreateShortcut($ShortcutPath)
         if ($Shortcut.Arguments.Contains($InstallDirectory)) { Remove-Item -LiteralPath $ShortcutPath -Force }
     }
-    Write-Host "Removed $TaskName and its desktop shortcut. WSL services, data and panel configuration were preserved."
+    Write-Host "Removed $TaskName and its desktop shortcut. Linux services, data and panel configuration were preserved."
     return
 }
 
@@ -40,23 +42,11 @@ foreach ($File in $Files) {
     }
 }
 $ConfigPath = Join-Path $InstallDirectory 'server-panel.json'
-if (Test-Path -LiteralPath $ConfigPath) {
-    $Previous = Get-Content -LiteralPath $ConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
-    if (-not $PSBoundParameters.ContainsKey('RepositoryPath') -and $Previous.RepositoryPath) { $RepositoryPath = $Previous.RepositoryPath }
-    if (-not $PSBoundParameters.ContainsKey('ServerUrl') -and $Previous.ServerUrl) { $ServerUrl = $Previous.ServerUrl }
-}
-$Uri = $null
-if (-not [Uri]::TryCreate($ServerUrl, [UriKind]::Absolute, [ref]$Uri) -or $Uri.Scheme -notin @('http','https')) {
-    throw 'ServerUrl must be an absolute HTTP or HTTPS URL.'
-}
-if ([string]::IsNullOrWhiteSpace($RepositoryPath) -or $RepositoryPath.Contains("`n") -or $RepositoryPath.Contains("`r")) {
-    throw 'RepositoryPath must be a Linux path to the HomeCinema checkout.'
-}
 New-Item -ItemType Directory -Path $InstallDirectory -Force | Out-Null
 foreach ($File in $Files) {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot $File) -Destination (Join-Path $InstallDirectory $File) -Force
 }
-@{ Distribution=$Distribution; RepositoryPath=$RepositoryPath; ServerUrl=$Uri.AbsoluteUri } |
+@{ Distribution=$Distribution } |
     ConvertTo-Json | Set-Content -LiteralPath $ConfigPath -Encoding UTF8
 
 $UserId = [Security.Principal.WindowsIdentity]::GetCurrent().Name
@@ -75,17 +65,29 @@ $Settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) 
 # Replace the old host only after all new files and configuration are ready.
 if ($null -ne $ExistingTask) { Stop-ScheduledTask -TaskName $TaskName }
 Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger @($LogonTrigger,$RecoveryTrigger) `
-    -Principal $Principal -Settings $Settings -Description 'Keep HomeCinema WSL running without a console window; recover the hidden host periodically.' -Force | Out-Null
+    -Principal $Principal -Settings $Settings -Description 'Keep this Linux WSL distribution running without a console; recover its hidden host periodically.' -Force | Out-Null
 Start-ScheduledTask -TaskName $TaskName
+if ($null -ne $LegacyTask) {
+    Stop-ScheduledTask -TaskName $LegacyTaskName
+    Unregister-ScheduledTask -TaskName $LegacyTaskName -Confirm:$false
+}
+$LegacyShortcutPath = Join-Path $Desktop 'HomeCinema.lnk'
+if (Test-Path -LiteralPath $LegacyShortcutPath) {
+    $LegacyShell = New-Object -ComObject WScript.Shell
+    $LegacyShortcut = $LegacyShell.CreateShortcut($LegacyShortcutPath)
+    if ($LegacyShortcut.Arguments.Contains((Join-Path $env:LOCALAPPDATA $LegacyTaskName))) {
+        Remove-Item -LiteralPath $LegacyShortcutPath -Force
+    }
+}
 
 $Shell = New-Object -ComObject WScript.Shell
 $Shortcut = $Shell.CreateShortcut($ShortcutPath)
 $Shortcut.TargetPath = $WscriptPath
 $Shortcut.Arguments = "`"$Launcher`" panel"
 $Shortcut.WorkingDirectory = $InstallDirectory
-$Shortcut.Description = 'HomeCinema server: start, status, Docker containers and logs'
+$Shortcut.Description = 'Linux / WSL: terminal, distribution status and all Docker containers'
 $Shortcut.IconLocation = (Join-Path $env:SystemRoot 'System32\shell32.dll') + ',15'
 $Shortcut.Save()
 Write-Host "Started hidden background task: $TaskName"
 Write-Host "Desktop control panel: $ShortcutPath"
-Write-Host 'Closing the panel does not stop WSL or the server.'
+Write-Host 'Closing the panel does not stop Linux, its services or its Docker containers.'
