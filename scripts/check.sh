@@ -6,6 +6,7 @@ while IFS= read -r file; do bash -n "$file"; done < <(find server scripts -type 
 python3 -m compileall -q server scripts
 bash -n install.sh
 python3 scripts/test_one_command.py
+python3 scripts/test_windows_server.py
 python3 scripts/test_portable.py
 python3 scripts/test_image_permissions.py
 python3 scripts/test_lampa_web.py
